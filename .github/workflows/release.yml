@@ -1,0 +1,167 @@
+name: Release
+
+# Build cross-platform binaries for the signex-kicad-import CLI on
+# every version-tag push and attach them to the matching GitHub
+# Release. The CLI is a single binary (no installer / no GUI), so
+# the matrix is simpler than the main signex repo's release.yml.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p signex-kicad-import
+
+      - name: Stage artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/signex-kicad-import staging/
+          cp LICENSE README.md staging/
+          cd staging
+          tar -czf ../signex-kicad-import-${{ matrix.target }}-${{ steps.version.outputs.version }}.tar.gz *
+
+      - name: Stage artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/signex-kicad-import.exe" staging/
+          Copy-Item LICENSE staging/LICENSE.txt
+          Copy-Item README.md staging/README.md
+          Compress-Archive -Path staging/* -DestinationPath "signex-kicad-import-${{ matrix.target }}-${{ steps.version.outputs.version }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signex-kicad-import-${{ matrix.target }}-${{ steps.version.outputs.version }}
+          path: |
+            signex-kicad-import-*.tar.gz
+            signex-kicad-import-*.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum signex-kicad-import-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release notes
+        run: |
+          cat > release-notes.md <<EOF
+          # signex-kicad-import v${{ steps.version.outputs.version }}
+
+          One-way converter from KiCad files (\`.kicad_sch\`, \`.kicad_pcb\`,
+          \`.kicad_sym\`, \`.kicad_pro\`) to Signex's native formats
+          (\`.snxsch\`, \`.snxpcb\`, \`.snxprj\`).
+
+          **Licensed GPL-3.0-or-later** because the underlying \`kicad-parser\`
+          and \`kicad-writer\` crates derive from KiCad's GPL-3.0 source.
+          Distributed independently from
+          [Signex Community](https://github.com/alplabai/signex) (Apache-2.0).
+          See [\`docs/LICENSING.md\`](https://github.com/alplabai/signex/blob/main/docs/LICENSING.md)
+          in the main repo for the rationale behind the two-repo split.
+
+          ## Usage
+
+          \`\`\`bash
+          signex-kicad-import path/to/project.kicad_pro
+          \`\`\`
+
+          Produces \`project.snxprj\` + sibling \`.snxsch\` / \`.snxpcb\` files
+          ready to open in Signex Community v0.9.0 or later. Originals
+          remain intact.
+
+          ## Downloads
+
+          Pick the binary for your platform below. After download, extract
+          and put \`signex-kicad-import\` (\`.exe\` on Windows) on your
+          \`PATH\`. Verify the SHA-256 against \`SHA256SUMS.txt\`.
+
+          | Platform | File |
+          |---|---|
+          | Linux x86_64 | \`signex-kicad-import-x86_64-unknown-linux-gnu-${{ steps.version.outputs.version }}.tar.gz\` |
+          | macOS x86_64 (Intel) | \`signex-kicad-import-x86_64-apple-darwin-${{ steps.version.outputs.version }}.tar.gz\` |
+          | macOS arm64 (Apple Silicon) | \`signex-kicad-import-aarch64-apple-darwin-${{ steps.version.outputs.version }}.tar.gz\` |
+          | Windows x86_64 | \`signex-kicad-import-x86_64-pc-windows-msvc-${{ steps.version.outputs.version }}.zip\` |
+          | Windows arm64 | \`signex-kicad-import-aarch64-pc-windows-msvc-${{ steps.version.outputs.version }}.zip\` |
+
+          ## Build from source
+
+          \`\`\`bash
+          git clone https://github.com/alplabai/signex-kicad-import
+          cd signex-kicad-import
+          cargo build --release -p signex-kicad-import
+          \`\`\`
+
+          The resulting binary is at \`target/release/signex-kicad-import\`.
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: signex-kicad-import ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: |
+            artifacts/signex-kicad-import-*.tar.gz
+            artifacts/signex-kicad-import-*.zip
+            artifacts/SHA256SUMS.txt
+          fail_on_unmatched_files: true

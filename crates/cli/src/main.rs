@@ -88,8 +88,18 @@ fn main() -> Result<()> {
 /// Parse a single `.kicad_sch` file and emit `<stem>.snxsch` in `out_dir`.
 /// Returns the stem so callers (e.g. project conversion) can reference it.
 fn convert_schematic(input: &Path, out_dir: &Path) -> Result<String> {
-    let sheet = kicad_parser::parse_schematic_file(input)
+    let mut sheet = kicad_parser::parse_schematic_file(input)
         .with_context(|| format!("parsing schematic {}", input.display()))?;
+
+    // Rewrite child-sheet references from `.kicad_sch` to `.snxsch` so the
+    // emitted .snxsch points at sibling Signex schematics rather than the
+    // original KiCad files. This is the import-side responsibility; Signex
+    // itself does not rewrite extensions on load.
+    for child in &mut sheet.child_sheets {
+        if let Some(stem) = child.filename.strip_suffix(".kicad_sch") {
+            child.filename = format!("{stem}.snxsch");
+        }
+    }
 
     let snx = SnxSchematic::new(sheet);
     let toml_text = snx
@@ -259,14 +269,14 @@ fn convert_project(input: &Path, out_dir: &Path) -> Result<()> {
     println!("wrote {}", snxprj_path.display());
 
     // If the schematic_root rename is needed, hint at it.
-    if let Some(root) = &schematic_root {
-        if root != &project_stem {
-            eprintln!(
-                "note: Signex .snxprj parser probes for '{project_stem}.snxsch' alongside the .snxprj. \
-                 The chosen schematic root is '{root}.snxsch'; rename it to '{project_stem}.snxsch' \
-                 if you want Signex to auto-discover it on open."
-            );
-        }
+    if let Some(root) = &schematic_root
+        && root != &project_stem
+    {
+        eprintln!(
+            "note: Signex .snxprj parser probes for '{project_stem}.snxsch' alongside the .snxprj. \
+             The chosen schematic root is '{root}.snxsch'; rename it to '{project_stem}.snxsch' \
+             if you want Signex to auto-discover it on open."
+        );
     }
     Ok(())
 }

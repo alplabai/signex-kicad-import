@@ -1,0 +1,23 @@
+[package]
+name = "signex-kicad-import"
+description = "One-way converter from KiCad files to Signex native formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "signex-kicad-import"
+path = "src/main.rs"
+
+[dependencies]
+kicad-parser = { workspace = true }
+kicad-writer = { workspace = true }
+signex-types = { workspace = true } # TODO(release): switch to crates.io once published
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }

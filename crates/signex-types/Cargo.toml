@@ -1,0 +1,29 @@
+# Vendored copy of signex-types from alplabai/signex (Apache-2.0).
+#
+# Cargo's git source recursively fetches submodules, and the main
+# signex repo has a private `docs/internal` submodule that GitHub
+# Actions runners can't authenticate to. To unblock the companion's
+# release workflow without exposing the private submodule, the
+# Apache-licensed signex-types crate is vendored here as a workspace
+# member. Bump in lockstep with main-repo releases — the next vendor
+# refresh happens when the companion targets a newer signex-types
+# (or once signex-types is published to crates.io and we drop the
+# vendoring).
+#
+# Original: https://github.com/alplabai/signex/tree/v0.9.0/crates/signex-types
+# Snapshot: 2026-04-29 (signex v0.9.0)
+
+[package]
+name = "signex-types"
+description = "Domain types for Signex EDA — schematic, PCB, net, layer, theme (vendored from alplabai/signex)"
+version = "0.9.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/alplabai/signex"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }

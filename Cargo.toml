@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kicad-parser", "crates/kicad-writer", "crates/cli"]
+members = ["crates/kicad-parser", "crates/kicad-writer", "crates/cli", "crates/signex-types"]
 resolver = "2"
 
 [workspace.package]
@@ -28,14 +28,12 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 
-# External Signex types crate (Apache-2.0). Sourced via git tag from
-# the main alplabai/signex repo since signex-types is unpublished on
-# crates.io. Pinned to the v0.9.0 release tag — the first
-# Apache-clean release. Bump in lockstep with main-repo releases.
-# Local dev: use [patch.crates-io] in a personal .cargo/config.toml
-# to point at ../signex/crates/signex-types if working side-by-side.
+# Vendored signex-types (Apache-2.0) — see crates/signex-types/
+# Cargo.toml header for the rationale. The git-source path tripped on
+# the main signex repo's private docs/internal submodule that
+# CI runners can't authenticate to.
 # TODO(release): switch to crates.io once signex-types is published.
-signex-types = { git = "https://github.com/alplabai/signex", tag = "v0.9.0" }
+signex-types = { path = "crates/signex-types" }
 
 # Internal crates of this companion repo
 kicad-parser = { path = "crates/kicad-parser" }

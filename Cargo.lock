@@ -409,6 +409,7 @@ dependencies = [
 [[package]]
 name = "signex-types"
 version = "0.7.0"
+source = "git+https://github.com/alplabai/signex?tag=v0.9.0#f5ce4d438ca4aef376141b9668f2a09957295250"
 dependencies = [
  "serde",
  "serde_json",

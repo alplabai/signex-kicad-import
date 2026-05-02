@@ -1000,6 +1000,14 @@ fn parse_symbol_instance(s: &SExpr) -> Symbol {
         .find("fields_autoplaced")
         .map(|f| f.first_arg().map(|v| v == "yes").unwrap_or(true))
         .unwrap_or(false);
+    // KiCad's `(fields_autoplaced)` token signals "KiCad's autoplacer
+    // owns these positions". Inverting it gives the closest semantic
+    // match for Signex v0.12's `fields_user_placed` flag, which the
+    // signex-engine autoplacer honours by skipping the symbol on
+    // rotate / mirror — preserving manually-positioned KiCad fields
+    // verbatim while still letting Signex re-autoplace fields that
+    // KiCad itself had auto-placed.
+    let fields_user_placed = !fields_autoplaced;
 
     let pin_uuids = s
         .children()
@@ -1098,6 +1106,7 @@ fn parse_symbol_instance(s: &SExpr) -> Symbol {
         ref_text: Some(ref_text),
         val_text: Some(val_text),
         fields_autoplaced,
+        fields_user_placed,
         dnp,
         in_bom,
         on_board,
@@ -2213,5 +2222,52 @@ mod tests {
         assert!(matches!(sheet.child_sheets[0].fill, FillType::Background));
         assert!(sheet.child_sheets[0].fields_autoplaced);
         assert_eq!(sheet.child_sheets[0].instances[0].page, "2");
+    }
+
+    #[test]
+    fn symbol_without_fields_autoplaced_marks_fields_user_placed() {
+        // KiCad-user-placed fields (no `(fields_autoplaced)` token in
+        // the source) must be preserved by Signex's autoplacer; the
+        // importer signals that by setting `fields_user_placed = true`.
+        let content = r#"(kicad_sch
+    (version 20231120)
+    (generator "test")
+    (uuid "00000000-0000-0000-0000-000000000001")
+    (paper "A4")
+    (symbol
+        (lib_id "Device:R")
+        (at 10 10 0)
+        (unit 1)
+        (uuid "00000000-0000-0000-0000-000000000010")
+        (property "Reference" "R1" (at 10 8 0) (effects (font (size 1.27 1.27))))
+        (property "Value" "10k" (at 10 12 0) (effects (font (size 1.27 1.27))))
+    )
+)"#;
+        let sheet = parse_schematic(content).unwrap();
+        assert!(!sheet.symbols[0].fields_autoplaced);
+        assert!(sheet.symbols[0].fields_user_placed);
+    }
+
+    #[test]
+    fn symbol_with_fields_autoplaced_clears_fields_user_placed() {
+        // KiCad-autoplaced fields are eligible for Signex re-autoplace.
+        let content = r#"(kicad_sch
+    (version 20231120)
+    (generator "test")
+    (uuid "00000000-0000-0000-0000-000000000001")
+    (paper "A4")
+    (symbol
+        (lib_id "Device:R")
+        (at 10 10 0)
+        (unit 1)
+        (fields_autoplaced)
+        (uuid "00000000-0000-0000-0000-000000000010")
+        (property "Reference" "R1" (at 10 8 0) (effects (font (size 1.27 1.27))))
+        (property "Value" "10k" (at 10 12 0) (effects (font (size 1.27 1.27))))
+    )
+)"#;
+        let sheet = parse_schematic(content).unwrap();
+        assert!(sheet.symbols[0].fields_autoplaced);
+        assert!(!sheet.symbols[0].fields_user_placed);
     }
 }

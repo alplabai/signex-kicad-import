@@ -1206,6 +1206,8 @@ struct SymbolExtras {
     #[serde(default)]
     fields_autoplaced: bool,
     #[serde(default)]
+    fields_user_placed: bool,
+    #[serde(default)]
     dnp: bool,
     #[serde(default = "default_true")]
     in_bom: bool,
@@ -1238,6 +1240,7 @@ impl SymbolExtras {
             && self.unit == 1
             && !self.is_power
             && !self.fields_autoplaced
+            && !self.fields_user_placed
             && !self.dnp
             && self.in_bom
             && self.on_board
@@ -1260,6 +1263,7 @@ impl SymbolExtras {
             unit: s.unit,
             is_power: s.is_power,
             fields_autoplaced: s.fields_autoplaced,
+            fields_user_placed: s.fields_user_placed,
             dnp: s.dnp,
             in_bom: s.in_bom,
             on_board: s.on_board,
@@ -1379,6 +1383,7 @@ fn row_to_symbol(row: SchComponentRow, extras: SymbolExtras) -> Symbol {
         ref_text: extras.ref_text,
         val_text: extras.val_text,
         fields_autoplaced: extras.fields_autoplaced,
+        fields_user_placed: extras.fields_user_placed,
         dnp: extras.dnp,
         in_bom: extras.in_bom,
         on_board: extras.on_board,
@@ -2201,6 +2206,7 @@ mod tests {
             ref_text: None,
             val_text: None,
             fields_autoplaced: false,
+            fields_user_placed: false,
             dnp: false,
             in_bom: true,
             on_board: true,

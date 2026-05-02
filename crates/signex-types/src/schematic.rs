@@ -413,6 +413,13 @@ pub struct Symbol {
     pub val_text: Option<TextProp>,
     #[serde(default)]
     pub fields_autoplaced: bool,
+    /// `true` when the user has manually placed at least one field on
+    /// this symbol; the v0.12 autoplacer in `signex-engine` will skip
+    /// the symbol so user positioning is never silently overwritten on
+    /// rotate / mirror. `#[serde(default)]` so legacy `.snxsch` files
+    /// keep loading with `false`.
+    #[serde(default)]
+    pub fields_user_placed: bool,
     #[serde(default)]
     pub dnp: bool,
     #[serde(default = "default_true")]

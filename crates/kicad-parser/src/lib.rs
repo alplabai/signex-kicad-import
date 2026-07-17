@@ -24,6 +24,7 @@
     clippy::unnecessary_lazy_evaluations
 )]
 
+pub mod diagnostic;
 pub mod error;
 pub mod pcb;
 pub mod schematic;
@@ -31,7 +32,13 @@ pub mod sexpr;
 pub mod sexpr_builder;
 pub mod symbol_lib;
 
+pub use diagnostic::{ImportDiagnostic, ParseReport};
 pub use error::ParseError;
-pub use pcb::{parse_pcb, parse_pcb_file};
-pub use schematic::{parse_project, parse_schematic, parse_schematic_file};
+pub use pcb::{
+    parse_pcb, parse_pcb_file, parse_pcb_file_with_diagnostics, parse_pcb_with_diagnostics,
+};
+pub use schematic::{
+    parse_project, parse_schematic, parse_schematic_file, parse_schematic_file_with_diagnostics,
+    parse_schematic_with_diagnostics,
+};
 pub use symbol_lib::parse_symbol_lib;

@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use uuid::Uuid;
 
@@ -8,42 +7,19 @@ use signex_types::project::{ProjectData, SheetEntry};
 use signex_types::property::SchematicProperty;
 use signex_types::schematic::{
     Bus, BusEntry, ChildSheet, FillType, GRID_MM, Graphic, HAlign, Junction, Label, LabelType,
-    LibGraphic, LibPin, LibSymbol, NoConnect, PIN_LENGTH_MM, PIN_NAME_OFFSET_MM, Pin,
-    PinDirection, PinShapeStyle, Point, SCHEMATIC_TEXT_MM, SchDrawing, SchematicSheet,
-    SheetInstance, SheetPin, Symbol, SymbolInstance, TextNote, TextProp, VAlign, Wire,
+    LibGraphic, LibPin, LibSymbol, NoConnect, PIN_LENGTH_MM, PIN_NAME_OFFSET_MM, Pin, PinDirection,
+    PinShapeStyle, Point, SCHEMATIC_TEXT_MM, SchDrawing, SchematicGroup, SchematicImage,
+    SchematicSheet, SheetInstance, SheetPin, StrokeColor, Symbol, SymbolInstance, TextNote,
+    TextProp, VAlign, Wire,
 };
 
 use crate::error::ParseError;
 use crate::sexpr::{self, SExpr};
+use crate::{ImportDiagnostic, ParseReport};
 
 // ---------------------------------------------------------------------------
-// UUID generator for elements missing UUIDs.
-// Uses process start time + atomic counter to avoid collisions across sessions.
+// Deterministic UUID fallback for legacy elements missing identity.
 // ---------------------------------------------------------------------------
-
-static COUNTER: AtomicU64 = AtomicU64::new(1);
-static SESSION_SEED: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x1234_5678_9abc_def0)
-});
-
-fn rand_u32() -> u32 {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mixed = n.wrapping_mul(0x517cc1b727220a95) ^ *SESSION_SEED;
-    (mixed >> 16) as u32
-}
-fn rand_u16() -> u16 {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mixed = n.wrapping_mul(0x517cc1b727220a95) ^ *SESSION_SEED;
-    (mixed >> 32) as u16
-}
-fn rand_u48() -> u64 {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mixed = n.wrapping_mul(0x517cc1b727220a95) ^ *SESSION_SEED;
-    mixed & 0xFFFF_FFFF_FFFF
-}
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -65,11 +41,7 @@ fn parse_text_prop(prop_node: &SExpr, _fallback_pos: Point) -> TextProp {
     let (position, rotation) = parse_at(prop_node);
     let effects = prop_node.find("effects");
 
-    let font_size = effects
-        .and_then(|e| e.find("font"))
-        .and_then(|f| f.find("size"))
-        .and_then(|s| s.arg_f64(0))
-        .unwrap_or(SCHEMATIC_TEXT_MM);
+    let (font_size, font_thickness, bold, italic) = parse_font_style(prop_node);
 
     // KiCad 8: (hide yes) may sit at the property level (direct child of the
     // property node) instead of inside (effects ...).  Check both locations.
@@ -134,6 +106,9 @@ fn parse_text_prop(prop_node: &SExpr, _fallback_pos: Point) -> TextProp {
         justify_h,
         justify_v,
         hidden,
+        font_thickness,
+        bold,
+        italic,
     }
 }
 
@@ -200,18 +175,7 @@ fn parse_uuid(node: &SExpr) -> Uuid {
     node.find("uuid")
         .and_then(|u| u.first_arg())
         .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(|| {
-            // Generate a fresh UUID rather than returning a duplicate "unknown"
-            let hex = format!(
-                "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-                rand_u32(),
-                rand_u16(),
-                rand_u16(),
-                rand_u16(),
-                rand_u48()
-            );
-            Uuid::parse_str(&hex).unwrap_or_else(|_| Uuid::new_v4())
-        })
+        .unwrap_or_else(|| Uuid::new_v5(&Uuid::NAMESPACE_OID, node.to_string().as_bytes()))
 }
 
 fn parse_fill_type(node: &SExpr) -> FillType {
@@ -232,6 +196,48 @@ fn parse_stroke_width(node: &SExpr) -> f64 {
         .and_then(|s| s.find("width"))
         .and_then(|w| w.arg_f64(0))
         .unwrap_or(0.0)
+}
+
+fn parse_stroke_type(node: &SExpr) -> String {
+    node.find("stroke")
+        .and_then(|stroke| stroke.find("type"))
+        .and_then(SExpr::first_arg)
+        .unwrap_or("default")
+        .to_string()
+}
+
+fn parse_direct_color(node: &SExpr) -> Option<StrokeColor> {
+    node.find("color").and_then(parse_rgba_quad)
+}
+
+fn parse_font_style(node: &SExpr) -> (f64, f64, bool, bool) {
+    let font = node
+        .find("effects")
+        .and_then(|effects| effects.find("font"));
+    let size = font
+        .and_then(|value| value.find("size"))
+        .and_then(|value| value.arg_f64(0))
+        .unwrap_or(SCHEMATIC_TEXT_MM);
+    let thickness = font
+        .and_then(|value| value.find("thickness"))
+        .and_then(|value| value.arg_f64(0))
+        .unwrap_or(0.0);
+    let has_flag = |keyword: &str| {
+        font.map(|value| {
+            value
+                .find(keyword)
+                .and_then(SExpr::first_arg)
+                .map(|flag| flag == "yes")
+                .unwrap_or_else(|| {
+                    value
+                        .children()
+                        .iter()
+                        .any(|child| matches!(child, SExpr::Atom(atom) if atom.as_str() == keyword))
+                })
+        })
+        .unwrap_or(false)
+    };
+    (size, thickness, has_flag("bold"), has_flag("italic"))
 }
 
 /// Parse `(stroke ... (color R G B A))` if present. Returns None when
@@ -890,6 +896,15 @@ fn parse_root_sheet_page(root: &SExpr) -> String {
 
 fn parse_wire(node: &SExpr) -> Wire {
     let pts = node.find("pts");
+    let points: Vec<Point> = pts
+        .map(|value| {
+            value
+                .find_all("xy")
+                .iter()
+                .map(|xy| Point::new(xy.arg_f64(0).unwrap_or(0.0), xy.arg_f64(1).unwrap_or(0.0)))
+                .collect()
+        })
+        .unwrap_or_default();
     let (start, end) = match pts {
         Some(pts) => {
             let xy_nodes = pts.find_all("xy");
@@ -901,7 +916,7 @@ fn parse_wire(node: &SExpr) -> Wire {
                 })
                 .unwrap_or(Point { x: 0.0, y: 0.0 });
             let end = xy_nodes
-                .get(1)
+                .last()
                 .map(|xy| Point {
                     x: xy.arg_f64(0).unwrap_or(0.0),
                     y: xy.arg_f64(1).unwrap_or(0.0),
@@ -916,6 +931,9 @@ fn parse_wire(node: &SExpr) -> Wire {
         start,
         end,
         stroke_width: parse_stroke_width(node),
+        points,
+        stroke_type: parse_stroke_type(node),
+        stroke_color: parse_stroke_color(node),
     }
 }
 
@@ -927,11 +945,7 @@ fn parse_label(node: &SExpr, label_type: LabelType) -> Label {
         .unwrap_or("")
         .to_string();
     let effects = node.find("effects");
-    let font_size = effects
-        .and_then(|e| e.find("font"))
-        .and_then(|f| f.find("size"))
-        .and_then(|s| s.arg_f64(0))
-        .unwrap_or(SCHEMATIC_TEXT_MM);
+    let (font_size, font_thickness, bold, italic) = parse_font_style(node);
     // KiCad may emit multiple justify tokens (e.g. "left bottom").
     // Preserve both horizontal and vertical parts regardless of token order.
     let (justify, justify_v) = effects
@@ -964,6 +978,15 @@ fn parse_label(node: &SExpr, label_type: LabelType) -> Label {
         font_size,
         justify,
         justify_v,
+        fields_autoplaced: node.find("fields_autoplaced").is_some(),
+        properties: node
+            .find_all("property")
+            .iter()
+            .map(|property| parse_schematic_property(property, position))
+            .collect(),
+        font_thickness,
+        bold,
+        italic,
     }
 }
 
@@ -1061,6 +1084,9 @@ fn parse_symbol_instance(s: &SExpr) -> Symbol {
             justify_h: HAlign::Center,
             justify_v: VAlign::Center,
             hidden: false,
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         });
     let val_text = val_prop
         .map(|p| parse_text_prop(p, position))
@@ -1071,6 +1097,9 @@ fn parse_symbol_instance(s: &SExpr) -> Symbol {
             justify_h: HAlign::Center,
             justify_v: VAlign::Center,
             hidden: false,
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         });
 
     // Parse custom fields (all properties beyond Reference/Value/Footprint/Datasheet)
@@ -1137,6 +1166,7 @@ fn parse_child_sheet(s: &SExpr) -> ChildSheet {
             let name = p.first_arg().unwrap_or("").to_string();
             let direction = p.arg(1).unwrap_or("bidirectional").to_string();
             let (position, rotation) = parse_at(p);
+            let (font_size, font_thickness, bold, italic) = parse_font_style(p);
             SheetPin {
                 uuid: parse_uuid(p),
                 name,
@@ -1145,6 +1175,10 @@ fn parse_child_sheet(s: &SExpr) -> ChildSheet {
                 rotation,
                 auto_generated: false,
                 user_moved: false,
+                font_size,
+                font_thickness,
+                bold,
+                italic,
             }
         })
         .collect();
@@ -1385,6 +1419,7 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
             uuid: parse_uuid(j),
             position: parse_at(j).0,
             diameter: j.find("diameter").and_then(|d| d.arg_f64(0)).unwrap_or(0.0),
+            color: parse_direct_color(j),
         })
         .collect();
 
@@ -1427,7 +1462,11 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
             Bus {
                 uuid: parse_uuid(b),
                 start: pts.first().copied().unwrap_or(Point { x: 0.0, y: 0.0 }),
-                end: pts.get(1).copied().unwrap_or(Point { x: 0.0, y: 0.0 }),
+                end: pts.last().copied().unwrap_or(Point { x: 0.0, y: 0.0 }),
+                points: pts,
+                stroke_width: parse_stroke_width(b),
+                stroke_type: parse_stroke_type(b),
+                stroke_color: parse_stroke_color(b),
             }
         })
         .collect();
@@ -1450,6 +1489,9 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
                 uuid: parse_uuid(be),
                 position,
                 size,
+                stroke_width: parse_stroke_width(be),
+                stroke_type: parse_stroke_type(be),
+                stroke_color: parse_stroke_color(be),
             }
         })
         .collect();
@@ -1468,11 +1510,7 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
         .map(|t| {
             let (position, rotation) = parse_at(t);
             let effects = t.find("effects");
-            let font_size = effects
-                .and_then(|e| e.find("font"))
-                .and_then(|f| f.find("size"))
-                .and_then(|s| s.arg_f64(0))
-                .unwrap_or(SCHEMATIC_TEXT_MM);
+            let (font_size, font_thickness, bold, italic) = parse_font_style(t);
             let justify = effects.and_then(|e| e.find("justify"));
             let justify_h = justify
                 .and_then(|j| j.first_arg())
@@ -1490,6 +1528,9 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
                 font_size,
                 justify_h,
                 justify_v,
+                font_thickness,
+                bold,
+                italic,
             }
         })
         .collect();
@@ -1504,6 +1545,66 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
         .collect();
 
     let title_block = parse_title_block(&root);
+    // <https://dev-docs.kicad.org/en/file-formats/sexpr-intro/#_group>
+    let groups: Vec<SchematicGroup> = root
+        .find_all("group")
+        .iter()
+        .map(|group| {
+            let uuid = group
+                .find("uuid")
+                .or_else(|| group.find("id"))
+                .and_then(SExpr::first_arg)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .unwrap_or_else(|| parse_uuid(group));
+            let members = group
+                .find("members")
+                .map(|node| {
+                    node.children()
+                        .iter()
+                        .filter_map(|child| match child {
+                            SExpr::Atom(atom) => Uuid::parse_str(atom.as_str()).ok(),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            SchematicGroup {
+                name: group.first_arg().unwrap_or("").to_string(),
+                uuid,
+                members,
+            }
+        })
+        .collect();
+    // <https://dev-docs.kicad.org/en/file-formats/sexpr-schematic/#_image_section>
+    let images: Vec<SchematicImage> = root
+        .find_all("image")
+        .iter()
+        .map(|image| SchematicImage {
+            uuid: parse_uuid(image),
+            position: parse_at(image).0,
+            scale: image
+                .find("scale")
+                .and_then(|value| value.arg_f64(0))
+                .unwrap_or(1.0),
+            data: image
+                .find("data")
+                .map(|node| {
+                    node.children()
+                        .iter()
+                        .filter_map(|child| match child {
+                            SExpr::Atom(atom) => Some(atom.as_str().to_string()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    let embedded_fonts = root
+        .find("embedded_fonts")
+        .and_then(SExpr::first_arg)
+        .map(|value| value == "yes")
+        .unwrap_or(false);
 
     Ok(SchematicSheet {
         uuid,
@@ -1525,6 +1626,9 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
         no_erc_directives,
         title_block,
         lib_symbols,
+        groups,
+        images,
+        embedded_fonts,
     })
 }
 
@@ -1532,6 +1636,41 @@ pub fn parse_schematic(content: &str) -> Result<SchematicSheet, ParseError> {
 pub fn parse_schematic_file(path: &Path) -> Result<SchematicSheet, ParseError> {
     let content = std::fs::read_to_string(path)?;
     parse_schematic(&content)
+}
+
+/// Parse a schematic and report known constructs that still cannot be represented.
+pub fn parse_schematic_with_diagnostics(
+    content: &str,
+) -> Result<ParseReport<SchematicSheet>, ParseError> {
+    let sheet = parse_schematic(content)?;
+    let root = sexpr::parse(content)?;
+    let documentation = "https://dev-docs.kicad.org/en/file-formats/sexpr-schematic/";
+    let mut diagnostics = Vec::new();
+
+    for (keyword, code) in [
+        ("text_box", "KICAD-SCH-TEXT-BOX"),
+        ("bus_alias", "KICAD-SCH-BUS-ALIAS"),
+        ("table", "KICAD-SCH-TABLE"),
+    ] {
+        let count = root.find_all(keyword).len();
+        if count > 0 {
+            diagnostics.push(ImportDiagnostic::unsupported(
+                code,
+                keyword,
+                count,
+                documentation,
+            ));
+        }
+    }
+
+    Ok(ParseReport::new(sheet, diagnostics))
+}
+
+pub fn parse_schematic_file_with_diagnostics(
+    path: &Path,
+) -> Result<ParseReport<SchematicSheet>, ParseError> {
+    let content = std::fs::read_to_string(path)?;
+    parse_schematic_with_diagnostics(&content)
 }
 
 // ---------------------------------------------------------------------------
@@ -2007,8 +2146,14 @@ mod tests {
             .find(|property| property.key == "Fitted")
             .unwrap();
 
-        assert_eq!(fitted.variant_overrides.get("DEFAULT"), Some(&"yes".to_string()));
-        assert_eq!(fitted.variant_overrides.get("LITE"), Some(&"no".to_string()));
+        assert_eq!(
+            fitted.variant_overrides.get("DEFAULT"),
+            Some(&"yes".to_string())
+        );
+        assert_eq!(
+            fitted.variant_overrides.get("LITE"),
+            Some(&"no".to_string())
+        );
     }
 
     #[test]
@@ -2269,5 +2414,101 @@ mod tests {
         let sheet = parse_schematic(content).unwrap();
         assert!(sheet.symbols[0].fields_autoplaced);
         assert!(!sheet.symbols[0].fields_user_placed);
+    }
+
+    #[test]
+    fn parse_schematic_preserves_strokes_junction_color_and_label_metadata() {
+        // <https://dev-docs.kicad.org/en/file-formats/sexpr-schematic/#_wire_and_bus_section>
+        let content = r#"(kicad_sch
+  (version 20240108)
+  (generator test)
+  (uuid "00000000-0000-0000-0000-000000000001")
+  (paper "A4")
+  (wire (pts (xy 1 2) (xy 3 4) (xy 5 6))
+    (stroke (width 0.2) (type dash) (color 10 20 30 0.5))
+    (uuid "00000000-0000-0000-0000-000000000002"))
+  (junction (at 3 4) (diameter 0.5) (color 1 2 3 1)
+    (uuid "00000000-0000-0000-0000-000000000003"))
+  (bus (pts (xy 10 10) (xy 20 20))
+    (stroke (width 0.4) (type default) (color 4 5 6 1))
+    (uuid "00000000-0000-0000-0000-000000000004"))
+  (bus_entry (at 10 10) (size 2.54 2.54)
+    (stroke (width 0.3) (type dot))
+    (uuid "00000000-0000-0000-0000-000000000005"))
+  (global_label "VCC" (shape power_in) (fields_autoplaced yes) (at 5 6 0)
+    (effects (font (size 1.27 1.27) (thickness 0.15) bold italic))
+    (uuid "00000000-0000-0000-0000-000000000006")
+    (property "Intersheetrefs" "${INTERSHEET_REFS}" (at 5 7 0)
+      (effects (font (size 1 1) (thickness 0.1)))))
+)"#;
+
+        let sheet = parse_schematic(content).unwrap();
+        assert_eq!(sheet.wires[0].points.len(), 3);
+        assert_eq!(sheet.wires[0].end, Point::new(5.0, 6.0));
+        assert_eq!(sheet.wires[0].stroke_type, "dash");
+        assert_eq!(sheet.wires[0].stroke_color.unwrap().a, 128);
+        assert_eq!(sheet.junctions[0].color.unwrap().r, 1);
+        assert_eq!(sheet.buses[0].stroke_width, 0.4);
+        assert_eq!(sheet.bus_entries[0].stroke_type, "dot");
+        assert!(sheet.labels[0].fields_autoplaced);
+        assert_eq!(sheet.labels[0].properties[0].key, "Intersheetrefs");
+        assert_eq!(sheet.labels[0].font_thickness, 0.15);
+        assert!(sheet.labels[0].bold);
+        assert!(sheet.labels[0].italic);
+    }
+
+    #[test]
+    fn parse_schematic_preserves_groups_images_and_embedded_fonts_setting() {
+        // <https://dev-docs.kicad.org/en/file-formats/sexpr-schematic/#_image_section>
+        // <https://dev-docs.kicad.org/en/file-formats/sexpr-intro/#_group>
+        let content = r#"(kicad_sch
+  (version 20240108)
+  (generator test)
+  (uuid "00000000-0000-0000-0000-000000000001")
+  (paper "A4")
+  (embedded_fonts yes)
+  (image (at 10 20) (scale 1.5)
+    (uuid "00000000-0000-0000-0000-000000000010")
+    (data "aGVsbG8=" "d29ybGQ="))
+  (group "Power"
+    (id "00000000-0000-0000-0000-000000000020")
+    (members "00000000-0000-0000-0000-000000000010"))
+)"#;
+
+        let sheet = parse_schematic(content).unwrap();
+        assert!(sheet.embedded_fonts);
+        assert_eq!(sheet.images[0].position, Point::new(10.0, 20.0));
+        assert_eq!(sheet.images[0].scale, 1.5);
+        assert_eq!(sheet.images[0].data, ["aGVsbG8=", "d29ybGQ="]);
+        assert_eq!(sheet.groups[0].name, "Power");
+        assert_eq!(sheet.groups[0].members, [sheet.images[0].uuid]);
+    }
+
+    #[test]
+    fn parse_report_warns_about_remaining_unsupported_schematic_constructs() {
+        let report = parse_schematic_with_diagnostics(
+            r#"(kicad_sch
+  (version 20240108)
+  (generator test)
+  (uuid "00000000-0000-0000-0000-000000000001")
+  (paper "A4")
+  (bus_alias "DATA" (members "D0" "D1"))
+  (text_box "Notes" (at 1 2) (size 10 5)
+    (uuid "00000000-0000-0000-0000-000000000002")))"#,
+        )
+        .unwrap();
+
+        assert_eq!(report.diagnostics.len(), 2);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(
+                    |diagnostic| diagnostic
+                        .documentation
+                        .is_some_and(|documentation| documentation
+                            .starts_with("https://dev-docs.kicad.org/"))
+                )
+        );
     }
 }

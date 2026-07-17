@@ -183,8 +183,8 @@ fn schematic_property_node(
     }
     items.push(text_effects_node(
         text.font_size,
-        false,
-        false,
+        text.bold,
+        text.italic,
         text.justify_h,
         text.justify_v,
     ));
@@ -200,6 +200,9 @@ fn default_symbol_property_text(position: Point, hidden: bool) -> TextProp {
         justify_h: HAlign::Center,
         justify_v: VAlign::Center,
         hidden,
+        font_thickness: 0.0,
+        bold: false,
+        italic: false,
     }
 }
 
@@ -221,7 +224,10 @@ fn custom_property_node(property: &SchematicProperty, fallback_pos: Point) -> SE
     if !property.variant_overrides.is_empty() {
         let mut variants = Vec::new();
         for (variant_name, variant_value) in &property.variant_overrides {
-            variants.push(node("variant", vec![atom(variant_name), atom(variant_value)]));
+            variants.push(node(
+                "variant",
+                vec![atom(variant_name), atom(variant_value)],
+            ));
         }
         if let SExpr::List(items) = &mut property_node {
             items.push(node("variants", variants));
@@ -1091,10 +1097,7 @@ mod tests {
 
     #[test]
     fn writes_not_connected_pins_as_no_connect() {
-        assert_eq!(
-            pin_electrical_str(PinDirection::DoNotConnect),
-            "no_connect"
-        );
+        assert_eq!(pin_electrical_str(PinDirection::DoNotConnect), "no_connect");
     }
 
     #[test]
@@ -1106,6 +1109,9 @@ mod tests {
             justify_h: HAlign::Center,
             justify_v: VAlign::Center,
             hidden: false,
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         };
 
         let out = render(
@@ -1131,6 +1137,9 @@ mod tests {
                 justify_h: HAlign::Left,
                 justify_v: VAlign::Bottom,
                 hidden: true,
+                font_thickness: 0.0,
+                bold: false,
+                italic: false,
             }),
             show_name: Some(true),
             do_not_autoplace: Some(true),
@@ -1173,6 +1182,9 @@ mod tests {
                 justify_h: HAlign::Center,
                 justify_v: VAlign::Center,
                 hidden: true,
+                font_thickness: 0.0,
+                bold: false,
+                italic: false,
             }),
             show_name: Some(false),
             do_not_autoplace: Some(false),
@@ -1227,6 +1239,9 @@ mod tests {
             no_erc_directives: Vec::new(),
             title_block: BTreeMap::new().into_iter().collect(),
             lib_symbols: BTreeMap::new().into_iter().collect(),
+            groups: Vec::new(),
+            images: Vec::new(),
+            embedded_fonts: false,
         };
 
         sheet.symbols.push(Symbol {
@@ -1249,6 +1264,9 @@ mod tests {
                 justify_h: HAlign::Center,
                 justify_v: VAlign::Center,
                 hidden: false,
+                font_thickness: 0.0,
+                bold: false,
+                italic: false,
             }),
             val_text: Some(TextProp {
                 position: Point { x: 10.0, y: 12.0 },
@@ -1257,6 +1275,9 @@ mod tests {
                 justify_h: HAlign::Center,
                 justify_v: VAlign::Center,
                 hidden: false,
+                font_thickness: 0.0,
+                bold: false,
+                italic: false,
             }),
             fields_autoplaced: true,
             fields_user_placed: false,
@@ -1373,6 +1394,11 @@ mod tests {
             font_size: SCHEMATIC_TEXT_MM,
             justify: HAlign::Left,
             justify_v: VAlign::Bottom,
+            fields_autoplaced: false,
+            properties: Vec::new(),
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         };
 
         write_label(&mut out, &label);
@@ -1394,6 +1420,11 @@ mod tests {
             font_size: SCHEMATIC_TEXT_MM,
             justify: HAlign::Right,
             justify_v: VAlign::Bottom,
+            fields_autoplaced: false,
+            properties: Vec::new(),
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         };
 
         write_label(&mut out, &label);
@@ -1434,6 +1465,9 @@ mod tests {
             font_size: 1.4,
             justify_h: HAlign::Center,
             justify_v: VAlign::Center,
+            font_thickness: 0.0,
+            bold: false,
+            italic: false,
         };
 
         let out = render(text_note_node(&note), 2);
@@ -1481,6 +1515,10 @@ mod tests {
                 rotation: 0.0,
                 auto_generated: true,
                 user_moved: false,
+                font_size: SCHEMATIC_TEXT_MM,
+                font_thickness: 0.0,
+                bold: false,
+                italic: false,
             }],
             instances: vec![SheetInstance {
                 project: "Main".to_string(),

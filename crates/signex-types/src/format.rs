@@ -288,28 +288,28 @@ pub fn parse_tsv_block<R: SnxTable>(block: &str, content: &str) -> Result<Vec<R>
 // ---------------------------------------------------------------------------
 
 fn parse_i64(value: &str, block: &str, row: usize, field: &str) -> Result<i64, FormatError> {
-    value.parse().map_err(|e: std::num::ParseIntError| {
-        FormatError::TsvFieldParse {
+    value
+        .parse()
+        .map_err(|e: std::num::ParseIntError| FormatError::TsvFieldParse {
             block: block.to_string(),
             row,
             field: field.to_string(),
             message: e.to_string(),
-        }
-    })
+        })
 }
 
 fn parse_f64(value: &str, block: &str, row: usize, field: &str) -> Result<f64, FormatError> {
     if value.is_empty() {
         return Ok(0.0);
     }
-    value.parse().map_err(|e: std::num::ParseFloatError| {
-        FormatError::TsvFieldParse {
+    value
+        .parse()
+        .map_err(|e: std::num::ParseFloatError| FormatError::TsvFieldParse {
             block: block.to_string(),
             row,
             field: field.to_string(),
             message: e.to_string(),
-        }
-    })
+        })
 }
 
 fn parse_uuid(value: &str, block: &str, row: usize, field: &str) -> Result<Uuid, FormatError> {
@@ -983,12 +983,8 @@ impl SnxSchematic {
         let component_rows: Vec<SchComponentRow> =
             self.sheet.symbols.iter().map(symbol_to_row).collect();
         let wire_rows: Vec<SchWireRow> = self.sheet.wires.iter().map(wire_to_row).collect();
-        let junction_rows: Vec<SchJunctionRow> = self
-            .sheet
-            .junctions
-            .iter()
-            .map(junction_to_row)
-            .collect();
+        let junction_rows: Vec<SchJunctionRow> =
+            self.sheet.junctions.iter().map(junction_to_row).collect();
         let label_rows: Vec<SchLabelRow> = self.sheet.labels.iter().map(label_to_row).collect();
 
         write_tsv_section(&mut out, "sheets.components", &component_rows);
@@ -1086,9 +1082,21 @@ impl SnxSchematic {
                 row_to_symbol(row, extra)
             })
             .collect();
-        let wires = wire_rows.into_iter().map(row_to_wire).collect();
-        let junctions = junction_rows.into_iter().map(row_to_junction).collect();
-        let labels = label_rows.into_iter().map(row_to_label).collect();
+        let wires = if sheet_extras.wires_full.is_empty() {
+            wire_rows.into_iter().map(row_to_wire).collect()
+        } else {
+            sheet_extras.wires_full.clone()
+        };
+        let junctions = if sheet_extras.junctions_full.is_empty() {
+            junction_rows.into_iter().map(row_to_junction).collect()
+        } else {
+            sheet_extras.junctions_full.clone()
+        };
+        let labels = if sheet_extras.labels_full.is_empty() {
+            label_rows.into_iter().map(row_to_label).collect()
+        } else {
+            sheet_extras.labels_full.clone()
+        };
 
         let sheet = SchematicSheet {
             uuid: raw.schematic_id,
@@ -1110,6 +1118,9 @@ impl SnxSchematic {
             no_erc_directives: sheet_extras.no_erc_directives,
             title_block: sheet_extras.title_block,
             lib_symbols: sheet_extras.lib_symbols,
+            groups: sheet_extras.groups,
+            images: sheet_extras.images,
+            embedded_fonts: sheet_extras.embedded_fonts,
         };
 
         Ok(SnxSchematic {
@@ -1287,6 +1298,12 @@ impl SymbolExtras {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SheetExtras {
     #[serde(default)]
+    wires_full: Vec<crate::schematic::Wire>,
+    #[serde(default)]
+    junctions_full: Vec<crate::schematic::Junction>,
+    #[serde(default)]
+    labels_full: Vec<crate::schematic::Label>,
+    #[serde(default)]
     child_sheets: Vec<crate::schematic::ChildSheet>,
     #[serde(default)]
     no_connects: Vec<crate::schematic::NoConnect>,
@@ -1304,11 +1321,20 @@ struct SheetExtras {
     title_block: std::collections::HashMap<String, String>,
     #[serde(default)]
     lib_symbols: std::collections::HashMap<String, crate::schematic::LibSymbol>,
+    #[serde(default)]
+    groups: Vec<crate::schematic::SchematicGroup>,
+    #[serde(default)]
+    images: Vec<crate::schematic::SchematicImage>,
+    #[serde(default)]
+    embedded_fonts: bool,
 }
 
 impl SheetExtras {
     fn is_default(&self) -> bool {
-        self.child_sheets.is_empty()
+        self.wires_full.is_empty()
+            && self.junctions_full.is_empty()
+            && self.labels_full.is_empty()
+            && self.child_sheets.is_empty()
             && self.no_connects.is_empty()
             && self.text_notes.is_empty()
             && self.buses.is_empty()
@@ -1317,10 +1343,16 @@ impl SheetExtras {
             && self.no_erc_directives.is_empty()
             && self.title_block.is_empty()
             && self.lib_symbols.is_empty()
+            && self.groups.is_empty()
+            && self.images.is_empty()
+            && !self.embedded_fonts
     }
 
     fn from_sheet(s: &SchematicSheet) -> Self {
         SheetExtras {
+            wires_full: s.wires.clone(),
+            junctions_full: s.junctions.clone(),
+            labels_full: s.labels.clone(),
             child_sheets: s.child_sheets.clone(),
             no_connects: s.no_connects.clone(),
             text_notes: s.text_notes.clone(),
@@ -1330,6 +1362,9 @@ impl SheetExtras {
             no_erc_directives: s.no_erc_directives.clone(),
             title_block: s.title_block.clone(),
             lib_symbols: s.lib_symbols.clone(),
+            groups: s.groups.clone(),
+            images: s.images.clone(),
+            embedded_fonts: s.embedded_fonts,
         }
     }
 }
@@ -1420,6 +1455,9 @@ fn row_to_wire(row: SchWireRow) -> Wire {
             y: nm_to_mm(row.end_y),
         },
         stroke_width: row.stroke_width,
+        points: Vec::new(),
+        stroke_type: String::new(),
+        stroke_color: None,
     }
 }
 
@@ -1440,6 +1478,7 @@ fn row_to_junction(row: SchJunctionRow) -> Junction {
             y: nm_to_mm(row.pos_y),
         },
         diameter: row.diameter,
+        color: None,
     }
 }
 
@@ -1472,6 +1511,11 @@ fn row_to_label(row: SchLabelRow) -> Label {
         font_size: row.font_size,
         justify: parse_halign(&row.justify),
         justify_v: parse_valign(&row.justify_v),
+        fields_autoplaced: false,
+        properties: Vec::new(),
+        font_thickness: 0.0,
+        bold: false,
+        italic: false,
     }
 }
 
@@ -1553,19 +1597,12 @@ impl SnxPcb {
                 })
             };
             out.push('\n');
-            out.push_str(&toml::to_string_pretty(&StackupWrapper {
-                stackup,
-                nets,
-            })?);
+            out.push_str(&toml::to_string_pretty(&StackupWrapper { stackup, nets })?);
         }
 
         // TSV blocks: footprints, pads, tracks, vias.
-        let footprint_rows: Vec<PcbFootprintRow> = self
-            .board
-            .footprints
-            .iter()
-            .map(footprint_to_row)
-            .collect();
+        let footprint_rows: Vec<PcbFootprintRow> =
+            self.board.footprints.iter().map(footprint_to_row).collect();
         let mut pad_rows: Vec<PcbPadRow> = Vec::new();
         for fp in &self.board.footprints {
             for pad in &fp.pads {
@@ -1600,6 +1637,11 @@ impl SnxPcb {
         let footprints = extras.footprints;
         let pads = extras.pads;
         let board_extras = if extras.outline.is_empty()
+            && extras.outline_primitives.is_empty()
+            && extras.arcs.is_empty()
+            && extras.segments_full.is_empty()
+            && extras.vias_full.is_empty()
+            && extras.layers_full.is_empty()
             && extras.graphics.is_empty()
             && extras.texts.is_empty()
         {
@@ -1607,6 +1649,11 @@ impl SnxPcb {
         } else {
             Some(BoardExtras {
                 outline: extras.outline,
+                outline_primitives: extras.outline_primitives,
+                arcs: extras.arcs,
+                segments_full: extras.segments_full,
+                vias_full: extras.vias_full,
+                layers_full: extras.layers_full,
                 graphics: extras.graphics,
                 texts: extras.texts,
             })
@@ -1680,10 +1727,17 @@ impl SnxPcb {
             .collect();
 
         for prow in pad_rows {
-            let extra = extras.pads.get(&prow.uuid.to_string()).cloned().unwrap_or_default();
+            let extra = extras
+                .pads
+                .get(&prow.uuid.to_string())
+                .cloned()
+                .unwrap_or_default();
             let pad = row_to_pad(prow.clone(), extra);
             // attach to footprint by ref
-            if let Some(fp) = footprints.iter_mut().find(|f| f.reference == prow.footprint_ref) {
+            if let Some(fp) = footprints
+                .iter_mut()
+                .find(|f| f.reference == prow.footprint_ref)
+            {
                 fp.pads.push(pad);
             } else {
                 // Orphan pad — preserve as a synthetic footprint
@@ -1704,14 +1758,22 @@ impl SnxPcb {
             }
         }
 
-        let segments = track_rows.into_iter().map(row_to_track).collect();
-        let vias = via_rows.into_iter().map(row_to_via).collect();
+        let segments = if board_extras.segments_full.is_empty() {
+            track_rows.into_iter().map(row_to_track).collect()
+        } else {
+            board_extras.segments_full.clone()
+        };
+        let vias = if board_extras.vias_full.is_empty() {
+            via_rows.into_iter().map(row_to_via).collect()
+        } else {
+            board_extras.vias_full.clone()
+        };
 
         // Reconstitute zones from `[[zones]]` array.
         let zones = raw.zones.unwrap_or_default();
 
         // Stackup → layers list (rebuild LayerDef with synthetic ids).
-        let (layers, setup) = match raw.stackup {
+        let (mut layers, setup) = match raw.stackup {
             Some(s) => {
                 let layers: Vec<crate::pcb::LayerDef> = s
                     .layers
@@ -1721,12 +1783,16 @@ impl SnxPcb {
                         id: i as u8,
                         name,
                         layer_type: String::new(),
+                        user_name: None,
                     })
                     .collect();
                 (layers, s.setup)
             }
             None => (Vec::new(), None),
         };
+        if !board_extras.layers_full.is_empty() {
+            layers = board_extras.layers_full.clone();
+        }
 
         let board = PcbBoard {
             uuid: raw.pcb_id,
@@ -1734,11 +1800,13 @@ impl SnxPcb {
             generator: raw.generator,
             thickness: raw.thickness,
             outline: board_extras.outline,
+            outline_primitives: board_extras.outline_primitives,
             layers,
             setup,
             nets: raw.nets.map(|n| n.entries).unwrap_or_default(),
             footprints,
             segments,
+            arcs: board_extras.arcs,
             vias,
             zones,
             graphics: board_extras.graphics,
@@ -1820,6 +1888,11 @@ struct PcbExtras {
     footprints: BTreeMap<String, FootprintExtras>,
     pads: BTreeMap<String, PadExtras>,
     outline: Vec<PcbPoint>,
+    outline_primitives: Vec<crate::pcb::BoardOutlinePrimitive>,
+    arcs: Vec<crate::pcb::TrackArc>,
+    segments_full: Vec<crate::pcb::Segment>,
+    vias_full: Vec<crate::pcb::Via>,
+    layers_full: Vec<crate::pcb::LayerDef>,
     graphics: Vec<crate::pcb::BoardGraphic>,
     texts: Vec<crate::pcb::BoardText>,
 }
@@ -1844,6 +1917,11 @@ impl PcbExtras {
             footprints,
             pads,
             outline: board.outline.clone(),
+            outline_primitives: board.outline_primitives.clone(),
+            arcs: board.arcs.clone(),
+            segments_full: board.segments.clone(),
+            vias_full: board.vias.clone(),
+            layers_full: board.layers.clone(),
             graphics: board.graphics.clone(),
             texts: board.texts.clone(),
         }
@@ -1884,11 +1962,13 @@ impl FootprintExtras {
 struct PadExtras {
     #[serde(default)]
     drill_shape: String,
+    #[serde(default)]
+    full: Option<Pad>,
 }
 
 impl PadExtras {
     fn is_default(&self) -> bool {
-        self.drill_shape.is_empty()
+        self.drill_shape.is_empty() && self.full.is_none()
     }
 
     fn from_pad(pad: &Pad) -> Self {
@@ -1898,6 +1978,7 @@ impl PadExtras {
                 .as_ref()
                 .map(|d| d.shape.clone())
                 .unwrap_or_default(),
+            full: Some(pad.clone()),
         }
     }
 }
@@ -1906,6 +1987,16 @@ impl PadExtras {
 struct BoardExtras {
     #[serde(default)]
     outline: Vec<PcbPoint>,
+    #[serde(default)]
+    outline_primitives: Vec<crate::pcb::BoardOutlinePrimitive>,
+    #[serde(default)]
+    arcs: Vec<crate::pcb::TrackArc>,
+    #[serde(default)]
+    segments_full: Vec<crate::pcb::Segment>,
+    #[serde(default)]
+    vias_full: Vec<crate::pcb::Via>,
+    #[serde(default)]
+    layers_full: Vec<crate::pcb::LayerDef>,
     #[serde(default)]
     graphics: Vec<crate::pcb::BoardGraphic>,
     #[serde(default)]
@@ -1982,10 +2073,15 @@ fn pad_to_row(pad: &Pad, footprint_ref: &str) -> PcbPadRow {
 }
 
 fn row_to_pad(row: PcbPadRow, extras: PadExtras) -> Pad {
+    if let Some(full) = extras.full {
+        return full;
+    }
     let drill = if row.drill > 0 {
         Some(DrillDef {
             diameter: nm_to_mm(row.drill),
             shape: extras.drill_shape,
+            width: None,
+            offset: PcbPoint::ZERO,
         })
     } else {
         None
@@ -2007,6 +2103,7 @@ fn row_to_pad(row: PcbPadRow, extras: PadExtras) -> Pad {
             x: nm_to_mm(row.pos_x),
             y: nm_to_mm(row.pos_y),
         },
+        rotation: 0.0,
         size: PcbPoint {
             x: nm_to_mm(row.size_x),
             y: nm_to_mm(row.size_y),
@@ -2015,6 +2112,19 @@ fn row_to_pad(row: PcbPadRow, extras: PadExtras) -> Pad {
         layers: split_layers(&row.layers),
         net,
         roundrect_ratio: row.roundrect_ratio,
+        chamfer_ratio: 0.0,
+        chamfer_corners: Vec::new(),
+        pin_function: String::new(),
+        pin_type: String::new(),
+        die_length: None,
+        solder_mask_margin: None,
+        solder_paste_margin: None,
+        solder_paste_margin_ratio: None,
+        clearance: None,
+        zone_connect: None,
+        thermal_width: None,
+        thermal_gap: None,
+        custom: None,
     }
 }
 
@@ -2045,6 +2155,7 @@ fn row_to_track(row: PcbTrackRow) -> Segment {
         width: nm_to_mm(row.width),
         layer: row.layer,
         net: row.net,
+        locked: false,
     }
 }
 
@@ -2073,6 +2184,10 @@ fn row_to_via(row: PcbViaRow) -> Via {
         layers: split_layers(&row.layers),
         net: row.net,
         via_type: parse_via_type(&row.via_type),
+        locked: false,
+        remove_unused_layers: false,
+        keep_end_layers: false,
+        free: false,
     }
 }
 
@@ -2107,6 +2222,9 @@ mod tests {
             no_erc_directives: vec![],
             title_block: Default::default(),
             lib_symbols: Default::default(),
+            groups: Vec::new(),
+            images: Vec::new(),
+            embedded_fonts: false,
         }
     }
 
@@ -2117,11 +2235,13 @@ mod tests {
             generator: "signex-test".into(),
             thickness: 1.6,
             outline: vec![],
+            outline_primitives: vec![],
             layers: vec![],
             setup: None,
             nets: vec![],
             footprints: vec![],
             segments: vec![],
+            arcs: vec![],
             vias: vec![],
             zones: vec![],
             graphics: vec![],
@@ -2151,7 +2271,8 @@ mod tests {
     #[test]
     fn rejects_wrong_format_version() {
         // Hand-craft a TOML document with an unsupported version token.
-        let bad = "format = \"snxsch/99\"\nschematic_id = \"00000000-0000-0000-0000-000000000000\"\n";
+        let bad =
+            "format = \"snxsch/99\"\nschematic_id = \"00000000-0000-0000-0000-000000000000\"\n";
         let err = SnxSchematic::parse(bad).expect_err("must reject");
         match err {
             FormatError::UnsupportedVersion { found, expected } => {
@@ -2220,11 +2341,21 @@ mod tests {
     }
 
     fn sample_wire(sx: f64, sy: f64, ex: f64, ey: f64) -> Wire {
+        let start = SchPoint { x: sx, y: sy };
+        let end = SchPoint { x: ex, y: ey };
         Wire {
             uuid: Uuid::new_v4(),
-            start: SchPoint { x: sx, y: sy },
-            end: SchPoint { x: ex, y: ey },
-            stroke_width: 0.0,
+            start,
+            end,
+            stroke_width: 0.2,
+            points: vec![start, end],
+            stroke_type: "dash".into(),
+            stroke_color: Some(crate::schematic::StrokeColor {
+                r: 10,
+                g: 20,
+                b: 30,
+                a: 255,
+            }),
         }
     }
 
@@ -2239,11 +2370,13 @@ mod tests {
                 id: 0,
                 name: "TopCopper".into(),
                 layer_type: "copper".into(),
+                user_name: None,
             },
             crate::pcb::LayerDef {
                 id: 1,
                 name: "BottomCopper".into(),
                 layer_type: "copper".into(),
+                user_name: None,
             },
         ];
         board.footprints.push(Footprint {
@@ -2273,6 +2406,12 @@ mod tests {
             uuid: Uuid::parse_str("0192a8c0-0002-7000-8000-000000000001").unwrap(),
             position: SchPoint { x: 30.0, y: 20.0 },
             diameter: 0.5,
+            color: Some(crate::schematic::StrokeColor {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 255,
+            }),
         });
         sheet.labels.push(Label {
             uuid: Uuid::parse_str("0192a8c0-0003-7000-8000-000000000001").unwrap(),
@@ -2284,7 +2423,25 @@ mod tests {
             font_size: 1.27,
             justify: HAlign::Left,
             justify_v: VAlign::Bottom,
+            fields_autoplaced: true,
+            properties: Vec::new(),
+            font_thickness: 0.15,
+            bold: true,
+            italic: true,
         });
+        let image_uuid = Uuid::parse_str("0192a8c0-0004-7000-8000-000000000001").unwrap();
+        sheet.images.push(crate::schematic::SchematicImage {
+            uuid: image_uuid,
+            position: SchPoint { x: 5.0, y: 6.0 },
+            scale: 1.5,
+            data: vec!["aGVsbG8=".into()],
+        });
+        sheet.groups.push(crate::schematic::SchematicGroup {
+            name: "Artwork".into(),
+            uuid: Uuid::parse_str("0192a8c0-0005-7000-8000-000000000001").unwrap(),
+            members: vec![image_uuid],
+        });
+        sheet.embedded_fonts = true;
 
         let snx = SnxSchematic::new(sheet.clone());
         let serialised = snx.write_string().expect("serialise");
@@ -2301,13 +2458,21 @@ mod tests {
         assert_eq!(back.sheet.wires.len(), 2);
         assert!((back.sheet.wires[0].start.x - 10.0).abs() < 1e-6);
         assert!((back.sheet.wires[1].end.y - 40.0).abs() < 1e-6);
+        assert_eq!(back.sheet.wires[0].stroke_type, "dash");
+        assert_eq!(back.sheet.wires[0].stroke_color.unwrap().g, 20);
 
         assert_eq!(back.sheet.junctions.len(), 1);
         assert_eq!(back.sheet.junctions[0].diameter, 0.5);
+        assert_eq!(back.sheet.junctions[0].color.unwrap().b, 3);
 
         assert_eq!(back.sheet.labels.len(), 1);
         assert_eq!(back.sheet.labels[0].text, "VIN");
         assert_eq!(back.sheet.labels[0].label_type, LType::Net);
+        assert!(back.sheet.labels[0].fields_autoplaced);
+        assert!(back.sheet.labels[0].bold);
+        assert_eq!(back.sheet.groups[0].members, [image_uuid]);
+        assert_eq!(back.sheet.images[0].scale, 1.5);
+        assert!(back.sheet.embedded_fonts);
     }
 
     #[test]
@@ -2320,6 +2485,7 @@ mod tests {
             pad_type: PadType::Smd,
             shape: PadShape::RoundRect,
             position: PcbPoint { x: 50.5, y: 25.0 },
+            rotation: 45.0,
             size: PcbPoint { x: 1.0, y: 0.6 },
             drill: None,
             layers: vec!["TopCopper".into()],
@@ -2328,6 +2494,19 @@ mod tests {
                 name: "VCC".into(),
             }),
             roundrect_ratio: 0.25,
+            chamfer_ratio: 0.0,
+            chamfer_corners: Vec::new(),
+            pin_function: "GPIO".into(),
+            pin_type: "bidirectional".into(),
+            die_length: None,
+            solder_mask_margin: None,
+            solder_paste_margin: None,
+            solder_paste_margin_ratio: None,
+            clearance: None,
+            zone_connect: Some(2),
+            thermal_width: None,
+            thermal_gap: None,
+            custom: None,
         };
         let pad2 = Pad {
             uuid: Uuid::parse_str("0192a8c0-0011-7000-8000-000000000002").unwrap(),
@@ -2335,6 +2514,7 @@ mod tests {
             pad_type: PadType::Smd,
             shape: PadShape::RoundRect,
             position: PcbPoint { x: 51.5, y: 25.0 },
+            rotation: 0.0,
             size: PcbPoint { x: 1.0, y: 0.6 },
             drill: None,
             layers: vec!["TopCopper".into()],
@@ -2343,6 +2523,19 @@ mod tests {
                 name: "GND".into(),
             }),
             roundrect_ratio: 0.25,
+            chamfer_ratio: 0.0,
+            chamfer_corners: Vec::new(),
+            pin_function: String::new(),
+            pin_type: String::new(),
+            die_length: None,
+            solder_mask_margin: None,
+            solder_paste_margin: None,
+            solder_paste_margin_ratio: None,
+            clearance: None,
+            zone_connect: None,
+            thermal_width: None,
+            thermal_gap: None,
+            custom: None,
         };
 
         let footprint = Footprint {
@@ -2390,6 +2583,7 @@ mod tests {
                 width: 0.254,
                 layer: "BottomCopper".into(),
                 net: 1,
+                locked: true,
             });
         }
 
@@ -2400,14 +2594,41 @@ mod tests {
             drill: 0.3,
             layers: vec!["TopCopper".into(), "BottomCopper".into()],
             net: 1,
-            via_type: ViaType::Through,
+            via_type: ViaType::Blind,
+            locked: true,
+            remove_unused_layers: true,
+            keep_end_layers: true,
+            free: true,
         });
+
+        board.arcs.push(crate::pcb::TrackArc {
+            uuid: Uuid::parse_str("0192a8c0-0031-7000-8000-000000000001").unwrap(),
+            start: PcbPoint { x: 1.0, y: 2.0 },
+            mid: PcbPoint { x: 2.0, y: 3.0 },
+            end: PcbPoint { x: 3.0, y: 2.0 },
+            width: 0.25,
+            layer: "TopCopper".into(),
+            net: 1,
+            locked: true,
+        });
+        board
+            .outline_primitives
+            .push(crate::pcb::BoardOutlinePrimitive::Arc {
+                uuid: Uuid::parse_str("0192a8c0-0032-7000-8000-000000000001").unwrap(),
+                start: PcbPoint { x: 0.0, y: 0.0 },
+                mid: PcbPoint { x: 5.0, y: -1.0 },
+                end: PcbPoint { x: 10.0, y: 0.0 },
+            });
 
         board.zones.push(Zone {
             uuid: Uuid::parse_str("0192a8c0-0040-7000-8000-000000000001").unwrap(),
             net: 2,
             net_name: "GND".into(),
             layer: "BottomCopper".into(),
+            layers: vec!["BottomCopper".into()],
+            name: String::new(),
+            hatch_style: String::new(),
+            hatch_pitch: 0.0,
             outline: vec![
                 PcbPoint { x: 10.0, y: 20.0 },
                 PcbPoint { x: 30.0, y: 20.0 },
@@ -2421,6 +2642,9 @@ mod tests {
             thermal_width: 0.0,
             clearance: 0.0,
             min_thickness: 0.0,
+            pad_connection: String::new(),
+            keepout: None,
+            fill: crate::pcb::ZoneFill::default(),
         });
 
         let snx = SnxPcb::new(board.clone());
@@ -2431,12 +2655,11 @@ mod tests {
         assert_eq!(back.board.footprints[0].reference, "U1");
         assert_eq!(back.board.footprints[0].pads.len(), 2);
         assert_eq!(back.board.footprints[0].pads[0].number, "1");
+        assert_eq!(back.board.footprints[0].pads[0].rotation, 45.0);
+        assert_eq!(back.board.footprints[0].pads[0].pin_function, "GPIO");
+        assert_eq!(back.board.footprints[0].pads[0].zone_connect, Some(2));
         assert_eq!(
-            back.board.footprints[0].pads[0]
-                .net
-                .as_ref()
-                .unwrap()
-                .name,
+            back.board.footprints[0].pads[0].net.as_ref().unwrap().name,
             "VCC"
         );
 
@@ -2447,6 +2670,11 @@ mod tests {
         assert_eq!(back.board.vias.len(), 1);
         assert!((back.board.vias[0].diameter - 0.6).abs() < 1e-6);
         assert!((back.board.vias[0].drill - 0.3).abs() < 1e-6);
+        assert_eq!(back.board.vias[0].via_type, ViaType::Blind);
+        assert!(back.board.vias[0].remove_unused_layers);
+        assert_eq!(back.board.arcs.len(), 1);
+        assert!(back.board.arcs[0].locked);
+        assert_eq!(back.board.outline_primitives.len(), 1);
 
         assert_eq!(back.board.zones.len(), 1);
         assert_eq!(back.board.zones[0].net_name, "GND");
@@ -2476,8 +2704,7 @@ mod tests {
         assert!(lines[0].contains("pos_x"));
         assert!(lines[0].contains("diameter"));
         // round-trip
-        let parsed: Vec<SchJunctionRow> =
-            parse_tsv_block("sheets.junctions", &body).unwrap();
+        let parsed: Vec<SchJunctionRow> = parse_tsv_block("sheets.junctions", &body).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].pos_x, 100);
         assert_eq!(parsed[1].pos_x, 30000000);
@@ -2519,8 +2746,7 @@ mod tests {
         let mut sym = sample_symbol();
         sym.fields
             .insert("MPN".to_string(), "LM2596S-5.0".to_string());
-        sym.fields
-            .insert("Tolerance".to_string(), "1%".to_string());
+        sym.fields.insert("Tolerance".to_string(), "1%".to_string());
         sym.dnp = true;
         sheet.symbols.push(sym);
 

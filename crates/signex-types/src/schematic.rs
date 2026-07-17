@@ -178,6 +178,12 @@ pub struct TextProp {
     pub justify_v: VAlign,
     #[serde(default)]
     pub hidden: bool,
+    #[serde(default)]
+    pub font_thickness: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -456,6 +462,14 @@ pub struct Wire {
     /// Stroke width in mm. 0.0 = use schematic default (~0.15mm).
     #[serde(default)]
     pub stroke_width: f64,
+    /// Ordered points as written by KiCad. `start` and `end` remain for
+    /// compatibility with existing Signex connectivity code.
+    #[serde(default)]
+    pub points: Vec<Point>,
+    #[serde(default)]
+    pub stroke_type: String,
+    #[serde(default)]
+    pub stroke_color: Option<StrokeColor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -465,6 +479,8 @@ pub struct Junction {
     /// 0.0 means use the theme default size.
     #[serde(default)]
     pub diameter: f64,
+    #[serde(default)]
+    pub color: Option<StrokeColor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -483,6 +499,16 @@ pub struct Label {
     pub justify: HAlign,
     #[serde(default = "default_label_v_align")]
     pub justify_v: VAlign,
+    #[serde(default)]
+    pub fields_autoplaced: bool,
+    #[serde(default)]
+    pub properties: Vec<SchematicProperty>,
+    #[serde(default)]
+    pub font_thickness: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
 }
 
 fn default_label_v_align() -> VAlign {
@@ -508,6 +534,12 @@ pub struct TextNote {
     pub justify_h: HAlign,
     #[serde(default)]
     pub justify_v: VAlign,
+    #[serde(default)]
+    pub font_thickness: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,6 +547,14 @@ pub struct Bus {
     pub uuid: Uuid,
     pub start: Point,
     pub end: Point,
+    #[serde(default)]
+    pub points: Vec<Point>,
+    #[serde(default)]
+    pub stroke_width: f64,
+    #[serde(default)]
+    pub stroke_type: String,
+    #[serde(default)]
+    pub stroke_color: Option<StrokeColor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,6 +562,12 @@ pub struct BusEntry {
     pub uuid: Uuid,
     pub position: Point,
     pub size: (f64, f64),
+    #[serde(default)]
+    pub stroke_width: f64,
+    #[serde(default)]
+    pub stroke_type: String,
+    #[serde(default)]
+    pub stroke_color: Option<StrokeColor>,
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +587,14 @@ pub struct SheetPin {
     pub auto_generated: bool,
     #[serde(default)]
     pub user_moved: bool,
+    #[serde(default)]
+    pub font_size: f64,
+    #[serde(default)]
+    pub font_thickness: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -584,6 +638,31 @@ pub struct StrokeColor {
     pub g: u8,
     pub b: u8,
     pub a: u8,
+}
+
+/// Named collection of existing schematic objects.
+///
+/// KiCad common format: <https://dev-docs.kicad.org/en/file-formats/sexpr-intro/#_group>
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SchematicGroup {
+    #[serde(default)]
+    pub name: String,
+    pub uuid: Uuid,
+    #[serde(default)]
+    pub members: Vec<Uuid>,
+}
+
+/// Embedded bitmap artwork.
+///
+/// KiCad schematic format: <https://dev-docs.kicad.org/en/file-formats/sexpr-schematic/#_image_section>
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SchematicImage {
+    pub uuid: Uuid,
+    pub position: Point,
+    #[serde(default)]
+    pub scale: f64,
+    #[serde(default)]
+    pub data: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -687,6 +766,12 @@ pub struct SchematicSheet {
     pub title_block: HashMap<String, String>,
     #[serde(default)]
     pub lib_symbols: HashMap<String, LibSymbol>,
+    #[serde(default)]
+    pub groups: Vec<SchematicGroup>,
+    #[serde(default)]
+    pub images: Vec<SchematicImage>,
+    #[serde(default)]
+    pub embedded_fonts: bool,
 }
 
 fn default_root_sheet_page() -> String {

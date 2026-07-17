@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use signex_types::format::{SnxPcb, SnxSchematic};
 
@@ -72,9 +72,9 @@ fn main() -> Result<()> {
             "symbol-library import (.kicad_sym -> .snxlib) is not yet implemented; \
              see issue-62 plan Phase 4.4"
         ),
-        other if other.is_empty() => bail!(
-            "input has no extension; expected one of .kicad_sch, .kicad_pcb, .kicad_pro"
-        ),
+        "" => {
+            bail!("input has no extension; expected one of .kicad_sch, .kicad_pcb, .kicad_pro")
+        }
         other => bail!(
             "unsupported input extension: .{other} (expected .kicad_sch, .kicad_pcb, .kicad_pro)"
         ),
@@ -88,8 +88,12 @@ fn main() -> Result<()> {
 /// Parse a single `.kicad_sch` file and emit `<stem>.snxsch` in `out_dir`.
 /// Returns the stem so callers (e.g. project conversion) can reference it.
 fn convert_schematic(input: &Path, out_dir: &Path) -> Result<String> {
-    let mut sheet = kicad_parser::parse_schematic_file(input)
+    let report = kicad_parser::parse_schematic_file_with_diagnostics(input)
         .with_context(|| format!("parsing schematic {}", input.display()))?;
+    for diagnostic in &report.diagnostics {
+        eprintln!("{}: {diagnostic}", input.display());
+    }
+    let mut sheet = report.value;
 
     // Rewrite child-sheet references from `.kicad_sch` to `.snxsch` so the
     // emitted .snxsch points at sibling Signex schematics rather than the
@@ -125,8 +129,12 @@ fn convert_schematic(input: &Path, out_dir: &Path) -> Result<String> {
 
 /// Parse a single `.kicad_pcb` file and emit `<stem>.snxpcb` in `out_dir`.
 fn convert_pcb(input: &Path, out_dir: &Path) -> Result<String> {
-    let board = kicad_parser::parse_pcb_file(input)
+    let report = kicad_parser::parse_pcb_file_with_diagnostics(input)
         .with_context(|| format!("parsing PCB {}", input.display()))?;
+    for diagnostic in &report.diagnostics {
+        eprintln!("{}: {diagnostic}", input.display());
+    }
+    let board = report.value;
 
     let snx = SnxPcb::new(board);
     let toml_text = snx

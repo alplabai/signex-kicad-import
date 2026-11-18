@@ -75,33 +75,36 @@ pub(crate) fn number_cell(v: f64) -> String {
     format!("{v}")
 }
 
-/// One TSV cell: quoted when empty, `-`, or holding whitespace, a quote or
-/// a backslash; inside quotes `\` `\n` `\r` `\t` are escaped and `"` doubles.
-pub(crate) fn tsv_cell(cell: &str) -> String {
-    if cell.is_empty() {
-        return "\"\"".to_string();
+/// One TSV cell, by the rules in `docs/SNX_FORMAT_NOTES.md` ("Cells").
+///
+/// A reader splits a row on runs of whitespace and treats a lone `-` as an
+/// empty cell, so a value that is empty, is `-`, or holds whitespace, a
+/// quote or a backslash goes between double quotes. Between quotes a quote
+/// is written twice and a backslash, line feed, carriage return or tab is
+/// written as its backslash escape.
+pub(crate) fn tsv_cell(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value != "-"
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\\');
+    if plain {
+        return value.to_owned();
     }
-    let quote = cell == "-"
-        || cell.chars().any(char::is_whitespace)
-        || cell.contains('"')
-        || cell.contains('\\');
-    if !quote {
-        return cell.to_string();
+    let body: String = value.chars().map(escaped_in_quotes).collect();
+    format!("\"{body}\"")
+}
+
+/// How one character is written between a cell's quotes.
+fn escaped_in_quotes(c: char) -> String {
+    match c {
+        '"' => "\"\"".to_owned(),
+        '\\' => "\\\\".to_owned(),
+        '\n' => "\\n".to_owned(),
+        '\r' => "\\r".to_owned(),
+        '\t' => "\\t".to_owned(),
+        other => other.to_string(),
     }
-    let mut out = String::with_capacity(cell.len() + 2);
-    out.push('"');
-    for c in cell.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '"' => out.push_str("\"\""),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// A TSV table as a `[name]` section with its rows in a TOML multi-line

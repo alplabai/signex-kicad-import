@@ -134,24 +134,73 @@ fn a_bottom_custom_outline_keeps_its_board_corners() {
     }
 }
 
+/// A library footprint whose pad 1 sits at (1, 0.5) turned 15 degrees,
+/// placed at angle `a`: on top as stored, or flipped to the bottom the way
+/// the source flips it (local y negated, every angle `t` becomes `180 - t`).
+fn placed_text(a: f64, bottom: bool) -> String {
+    let (layer, fp_angle, y, pad_angle) = if bottom {
+        ("B.Cu", 180.0 - a, -0.5, 180.0 - (a + 15.0))
+    } else {
+        ("F.Cu", a, 0.5, a + 15.0)
+    };
+    format!(
+        r#"(footprint "Lib:Q" (layer "{layer}") (at 50 40 {fp_angle})
+  (pad "1" smd rect (at 1 {y} {pad_angle}) (size 0.8 0.4) (layers "{layer}") (net 1 "N")))"#
+    )
+}
+
 #[test]
-fn a_self_crossing_outline_is_not_simple() {
-    let bowtie = [
-        Point::new(0.0, 0.0),
-        Point::new(2.0, 2.0),
-        Point::new(2.0, 0.0),
-        Point::new(0.0, 1.0),
-    ];
-    assert!(!is_simple(&bowtie));
-    let square = [
-        Point::new(0.0, 0.0),
-        Point::new(1.0, 0.0),
-        Point::new(1.0, 1.0),
-        Point::new(0.0, 1.0),
-    ];
-    assert!(is_simple(&square));
-    let folded = [Point::new(0.0, 0.0), Point::new(2.0, 0.0), Point::new(1.0, 0.0)];
-    assert!(!is_simple(&folded));
+fn a_flipped_footprint_keeps_its_library_pad_coordinates() {
+    for a in [0.0, 30.0, 90.0, 200.0] {
+        let (top, _) = convert_text(&placed_text(a, false));
+        let (bottom, _) = convert_text(&placed_text(a, true));
+        assert_eq!(bottom.layer, "BottomCopper");
+        assert_near(top.pads[0].position, Point::new(1.0, 0.5));
+        assert_near(bottom.pads[0].position, Point::new(1.0, 0.5));
+        // Flipping in Signex turns a part the other way, as the source's
+        // flip did: the bottom rotation is the top one negated.
+        let expected = normalize_deg(-top.rotation);
+        assert!((bottom.rotation - expected).abs() < 1e-9, "{a}: {}", bottom.rotation);
+        // A rectangle half a turn round is the same copper.
+        let (t, b) = (top.pads[0].rotation % 180.0, bottom.pads[0].rotation % 180.0);
+        assert!((t - b).abs() < 1e-9, "{a}: own turns {t} and {b}");
+        // And the flipped pad lands where the source puts it.
+        let source = source_world(
+            Point::new(50.0, 40.0),
+            180.0 - a,
+            Point::new(1.0, -0.5),
+        );
+        assert_near(signex_world(&bottom, bottom.pads[0].position), source);
+    }
+}
+
+#[test]
+fn designator_and_value_texts_become_fields() {
+    let (fp, _) = convert_text(
+        r#"(module "Lib:R" (layer "B.Cu") (at 10 10 90)
+  (fp_text reference "R7" (at 0 -1.5 90) (layer "B.SilkS")
+    (effects (font (size 1.2 1.2)) (justify mirror)))
+  (fp_text value "4k7" (at 0 1.5 90) (layer "B.Fab") hide
+    (effects (font (size 1 1))))
+  (fp_text user "note" (at 0 3 90) (layer "B.Fab")))"#,
+    );
+    assert_eq!(fp.reference, "R7");
+    assert_eq!(fp.value, "4k7");
+    let reference = fp.properties.iter().find(|p| p.key == "Reference").expect("Reference");
+    assert_eq!(reference.value, "R7");
+    assert_eq!(reference.layer.as_deref(), Some("BottomSilkscreen"));
+    assert_eq!(reference.font_size, Some(1.2));
+    assert_near(reference.position.expect("a position"), Point::new(0.0, 1.5));
+    assert!(!reference.hidden);
+    let value = fp.properties.iter().find(|p| p.key == "Value").expect("Value");
+    assert!(value.hidden);
+    let texts: Vec<&str> = fp
+        .graphics
+        .iter()
+        .filter(|g| g.graphic_type == "text")
+        .map(|g| g.text.as_str())
+        .collect();
+    assert_eq!(texts, ["note"]);
 }
 
 #[test]

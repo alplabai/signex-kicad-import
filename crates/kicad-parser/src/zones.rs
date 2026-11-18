@@ -8,7 +8,7 @@
 
 use snx_writer::model::{Point, Zone, ZoneKind};
 
-use crate::geometry::{arc_polyline, number_of, point_args, point_of};
+use crate::geometry::{arc_polyline, number_of, point_args, point_of, twice_area};
 use crate::ids::Ids;
 use crate::layers::{Stack, is_copper};
 use crate::nets::NetTable;
@@ -38,14 +38,12 @@ pub(crate) fn convert(
     {
         report.note("rule area that allows some items written as a full copper keepout");
     }
-    let outline = outline_of(node);
-    if outline.len() < 3 {
+    let shapes = shapes_of(node, report);
+    let Some((first, _)) = shapes.first() else {
         report.note("zone without an outline dropped");
         return Vec::new();
-    }
-    if node.find_all("polygon").len() > 1 {
-        report.note("zone with several outlines: only the first kept");
-    }
+    };
+    let outline = first.clone();
     let net_name = node
         .find("net_name")
         .and_then(SExpr::first_arg)
@@ -60,7 +58,17 @@ pub(crate) fn convert(
         Some(SExpr::Atom(Atom::Raw(m))) => Some(m.as_str()),
         _ => None,
     });
+    if mode == Some("no") {
+        report.note("zone that leaves pads unconnected written with direct pad connections");
+    }
     let fill = node.find("fill");
+    if fill
+        .and_then(|f| f.find("mode"))
+        .and_then(SExpr::first_arg)
+        == Some("hatch")
+    {
+        report.note("hatched zone written as a solid pour");
+    }
     let template = Zone {
         uuid: ids.fresh(),
         kind,
@@ -68,6 +76,7 @@ pub(crate) fn convert(
         net_name,
         layer: String::new(),
         outline,
+        holes: Vec::new(),
         priority: node
             .find("priority")
             .and_then(|p| p.arg_f64(0))
@@ -84,16 +93,71 @@ pub(crate) fn convert(
     };
     let mut zones = Vec::new();
     for layer in zone_layers(node, stack, report) {
-        let mut zone = template.clone();
-        zone.layer = layer;
-        if zones.is_empty() {
-            zone.uuid = ids.of(node, report);
-        } else {
-            zone.uuid = ids.fresh();
+        for (outline, holes) in &shapes {
+            let mut zone = template.clone();
+            zone.layer = layer.clone();
+            zone.outline = outline.clone();
+            zone.holes = holes.clone();
+            zone.uuid = if zones.is_empty() {
+                ids.of(node, report)
+            } else {
+                ids.fresh()
+            };
+            zones.push(zone);
         }
-        zones.push(zone);
     }
     zones
+}
+
+/// A zone's areas: each outline with the cut-outs inside it.
+type Shape = (Vec<Point>, Vec<Vec<Point>>);
+
+/// The zone's `(polygon ..)` rings sorted into outlines and their cut-outs:
+/// a ring that lies inside a larger one is a cut-out of it, any other ring
+/// is an outline of its own (reported, since it becomes its own zone).
+fn shapes_of(node: &SExpr, report: &mut Report) -> Vec<Shape> {
+    let mut rings: Vec<Vec<Point>> = node
+        .find_all("polygon")
+        .into_iter()
+        .map(ring_of)
+        .filter(|r| r.len() >= 3)
+        .collect();
+    // Largest first, so a cut-out always comes after the ring holding it.
+    rings.sort_by(|a, b| twice_area(b).abs().total_cmp(&twice_area(a).abs()));
+    let mut shapes: Vec<Shape> = Vec::new();
+    for ring in rings {
+        let holder = shapes
+            .iter()
+            .position(|(outline, _)| ring.iter().all(|&p| inside(outline, p)));
+        match holder {
+            Some(i) => shapes[i].1.push(ring),
+            None => {
+                if !shapes.is_empty() {
+                    report.note(
+                        "zone area apart from its first outline written as its own zone",
+                    );
+                }
+                shapes.push((ring, Vec::new()));
+            }
+        }
+    }
+    shapes
+}
+
+/// Whether `p` lies inside the ring (even-odd rule).
+fn inside(ring: &[Point], p: Point) -> bool {
+    let mut crossings = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) {
+            let x = a.x + (p.y - a.y) * (b.x - a.x) / (b.y - a.y);
+            if p.x < x {
+                crossings = !crossings;
+            }
+        }
+    }
+    crossings
 }
 
 /// The copper layers a zone is on: `(layer ..)` or `(layers ..)`, with the
@@ -124,9 +188,9 @@ fn zone_layers(node: &SExpr, stack: &Stack, report: &mut Report) -> Vec<String> 
     layers
 }
 
-/// The first `(polygon (pts ..))`, arcs in it as chords.
-fn outline_of(node: &SExpr) -> Vec<Point> {
-    let Some(pts) = node.find("polygon").and_then(|p| p.find("pts")) else {
+/// One `(polygon (pts ..))` as a ring, arcs in it as chords.
+fn ring_of(polygon: &SExpr) -> Vec<Point> {
+    let Some(pts) = polygon.find("pts") else {
         return Vec::new();
     };
     let mut out: Vec<Point> = Vec::new();
@@ -209,5 +273,27 @@ mod tests {
                  (polygon (pts (xy 0 0) (xy 1 0) (xy 1 1))))"#,
         );
         assert!(!zones[0].thermal_relief);
+    }
+
+    #[test]
+    fn rings_inside_the_outline_are_holes_and_rings_apart_are_zones() {
+        let (zones, report) = convert_text(
+            r#"(zone (net 1) (layer "F.Cu") (connect_pads no (clearance 0.2))
+                 (fill yes (mode hatch))
+                 (polygon (pts (xy 2 2) (xy 4 2) (xy 4 4) (xy 2 4)))
+                 (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10) (xy 0 10)))
+                 (polygon (pts (xy 20 0) (xy 25 0) (xy 25 5))))"#,
+        );
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].outline.len(), 4);
+        assert_eq!(zones[0].outline[1], Point::new(10.0, 0.0));
+        assert_eq!(zones[0].holes.len(), 1);
+        assert_eq!(zones[0].holes[0][0], Point::new(2.0, 2.0));
+        assert!(zones[1].holes.is_empty());
+        assert_ne!(zones[0].uuid, zones[1].uuid);
+        let summary = report.summary();
+        assert!(summary.contains("written as its own zone"), "{summary}");
+        assert!(summary.contains("leaves pads unconnected"), "{summary}");
+        assert!(summary.contains("hatched zone written as a solid pour"), "{summary}");
     }
 }

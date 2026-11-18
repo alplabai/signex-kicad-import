@@ -10,7 +10,7 @@
 
 use crate::model::{
     Board, BoardGraphic, BoardText, Footprint, FootprintGraphic, Pad, PadShape, Point, Property,
-    TrackArc, Zone,
+    StackLayer, TrackArc, Zone,
 };
 use crate::text::{
     nm, number_cell, toml_float, toml_point, toml_points, toml_string, tsv_cell, tsv_section,
@@ -36,6 +36,13 @@ pub fn write_board(board: &Board) -> String {
     }
     for arc in &board.arcs {
         out.push_str(&arc_table(arc));
+    }
+    if let Some(origin) = board.origin {
+        out.push_str(&format!(
+            "\n[board_options.origin]\nx = {}\ny = {}\n",
+            nm(origin.x),
+            nm(origin.y)
+        ));
     }
     out.push_str(&footprint_extras(&board.footprints));
     out.push_str(&pad_extras(&board.footprints));
@@ -69,6 +76,21 @@ fn stackup(board: &Board) -> String {
             "layer_types = {}\n",
             string_array(board.layers.iter().map(|l| l.layer_type.clone()))
         ));
+    }
+    let named: Vec<&StackLayer> = board
+        .layers
+        .iter()
+        .filter(|l| !l.display_name.is_empty())
+        .collect();
+    if !named.is_empty() {
+        out.push_str("\n[stackup.display_names]\n");
+        for layer in named {
+            out.push_str(&format!(
+                "{} = {}\n",
+                toml_string(&layer.token),
+                toml_string(&layer.display_name)
+            ));
+        }
     }
     let s = &board.setup;
     out.push_str("\n[stackup.setup]\n");
@@ -264,6 +286,10 @@ fn zone_table(zone: &Zone) -> String {
     out.push_str(&format!("net_name = {}\n", toml_string(&zone.net_name)));
     out.push_str(&format!("layer = {}\n", toml_string(&zone.layer)));
     out.push_str(&format!("outline = {}\n", toml_points(&zone.outline)));
+    if !zone.holes.is_empty() {
+        let rings: Vec<String> = zone.holes.iter().map(|h| toml_points(h)).collect();
+        out.push_str(&format!("holes = [{}]\n", rings.join(", ")));
+    }
     out.push_str(&format!("priority = {}\n", zone.priority));
     out.push_str(&format!(
         "fill_type = {}\n",

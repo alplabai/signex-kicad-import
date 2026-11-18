@@ -17,6 +17,13 @@ impl Report {
         *self.counts.entry(message.into()).or_insert(0) += 1;
     }
 
+    /// Add every count of `other` to this report.
+    pub fn merge(&mut self, other: &Report) {
+        for (message, count) in &other.counts {
+            *self.counts.entry(message.clone()).or_insert(0) += count;
+        }
+    }
+
     /// `(message, count)` pairs, by message.
     pub fn entries(&self) -> impl Iterator<Item = (&str, usize)> {
         self.counts.iter().map(|(m, &n)| (m.as_str(), n))

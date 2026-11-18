@@ -25,8 +25,10 @@ impl Point {
 pub struct StackLayer {
     /// The layer token: `TopCopper`, `Inner1Copper`, `TopSilkscreen`, ...
     pub token: String,
-    /// `copper`, `plane`, or empty for a non-copper layer.
+    /// `signal`, `plane`, or empty for a non-copper layer.
     pub layer_type: String,
+    /// The name the board gives the layer; empty for none.
+    pub display_name: String,
 }
 
 /// Board-wide defaults (`[stackup.setup]`), millimetres.
@@ -253,6 +255,8 @@ pub struct Zone {
     pub net_name: String,
     pub layer: String,
     pub outline: Vec<Point>,
+    /// Cut-outs: simple rings inside `outline`, disjoint from each other.
+    pub holes: Vec<Vec<Point>>,
     pub priority: u32,
     pub thermal_relief: bool,
     pub thermal_gap: f64,
@@ -306,6 +310,9 @@ pub struct Board {
     pub outline: Vec<Point>,
     pub graphics: Vec<BoardGraphic>,
     pub texts: Vec<BoardText>,
+    /// The point the board's coordinates count from; `None` for the
+    /// model's zero.
+    pub origin: Option<Point>,
 }
 
 /// A net class for the `.snxprj` sidecar, millimetres; 0 means unset.

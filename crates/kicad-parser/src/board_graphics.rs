@@ -192,6 +192,7 @@ fn solid(node: &SExpr, g: &BoardGraphic, nets: &mut NetTable) -> Option<Zone> {
         net_name: String::new(),
         layer: g.layer.clone(),
         outline,
+        holes: Vec::new(),
         priority: 0,
         thermal_relief: false,
         thermal_gap: 0.0,

@@ -40,15 +40,18 @@ fn sample() -> Board {
         layers: vec![
             StackLayer {
                 token: "TopCopper".into(),
-                layer_type: "copper".into(),
+                layer_type: "signal".into(),
+                display_name: "Top".into(),
             },
             StackLayer {
                 token: "BottomCopper".into(),
-                layer_type: "copper".into(),
+                layer_type: "signal".into(),
+                display_name: String::new(),
             },
             StackLayer {
                 token: "EdgeCuts".into(),
                 layer_type: String::new(),
+                display_name: String::new(),
             },
         ],
         setup: Setup::default(),
@@ -123,6 +126,11 @@ fn sample() -> Board {
                 Point::new(5.0, 0.0),
                 Point::new(5.0, 5.0),
             ],
+            holes: vec![vec![
+                Point::new(3.0, 1.0),
+                Point::new(4.0, 1.0),
+                Point::new(4.0, 2.0),
+            ]],
             priority: 0,
             thermal_relief: true,
             thermal_gap: 0.5,
@@ -140,6 +148,7 @@ fn sample() -> Board {
         ],
         graphics: Vec::new(),
         texts: Vec::new(),
+        origin: Some(Point::new(10.0, 20.5)),
     }
 }
 
@@ -175,8 +184,23 @@ fn the_stackup_lists_tokens_and_types_in_parallel() {
     let types = value["stackup"]["layer_types"].as_array().expect("types");
     assert_eq!(layers.len(), types.len());
     assert_eq!(layers[0].as_str(), Some("TopCopper"));
+    assert_eq!(types[0].as_str(), Some("signal"));
     assert_eq!(types[2].as_str(), Some(""));
     assert_eq!(value["stackup"]["setup"]["clearance"].as_float(), Some(0.2));
+    let names = value["stackup"]["display_names"].as_table().expect("names");
+    assert_eq!(names.len(), 1);
+    assert_eq!(names["TopCopper"].as_str(), Some("Top"));
+}
+
+#[test]
+fn zone_holes_and_the_board_origin_are_written() {
+    let (_, value) = parsed();
+    let holes = value["zones"][0]["holes"].as_array().expect("holes");
+    assert_eq!(holes.len(), 1);
+    assert_eq!(holes[0].as_array().map(Vec::len), Some(3));
+    let origin = &value["board_options"]["origin"];
+    assert_eq!(origin["x"].as_integer(), Some(10_000_000));
+    assert_eq!(origin["y"].as_integer(), Some(20_500_000));
 }
 
 #[test]

@@ -88,12 +88,23 @@ pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted
         outline: ring,
         graphics,
         texts: drawings.texts,
+        origin: origin_of(&root),
     };
     Ok(Converted {
         board,
         classes,
         report,
     })
+}
+
+/// The board's own origin: the auxiliary (drill and place) origin when the
+/// board sets one, else the grid origin; `None` when neither is set.
+fn origin_of(root: &SExpr) -> Option<Point> {
+    let setup = root.find("setup")?;
+    ["aux_axis_origin", "grid_origin"]
+        .iter()
+        .filter_map(|key| point_of(setup, key))
+        .find(|p| p.x != 0.0 || p.y != 0.0)
 }
 
 /// The outline ring and the edge drawings that are not part of it.

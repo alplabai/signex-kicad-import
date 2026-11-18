@@ -80,20 +80,21 @@ impl Stack {
     /// the inner layers 1 to 30 and id 2 in files that number them 4, 6, ..;
     /// the inner layers follow in id order.
     pub(crate) fn read(root: &SExpr, report: &mut Report) -> Self {
-        let entries: Vec<(u32, &str, &str)> = root
+        // (id, name, type, the user's own name when the board gives one)
+        let entries: Vec<(u32, &str, &str, Option<&str>)> = root
             .find("layers")
             .map(SExpr::children)
             .unwrap_or(&[])
             .iter()
             .filter_map(|e| {
                 let id = e.keyword()?.parse().ok()?;
-                Some((id, e.arg(0)?, e.arg(1).unwrap_or("signal")))
+                Some((id, e.arg(0)?, e.arg(1).unwrap_or("signal"), e.arg(2)))
             })
             .collect();
         let is_copper_kind = |kind: &str| COPPER_KINDS.contains(&kind);
         let bottom_id = if entries
             .iter()
-            .any(|&(id, _, kind)| id == 31 && is_copper_kind(kind))
+            .any(|&(id, _, kind, _)| id == 31 && is_copper_kind(kind))
         {
             31
         } else {
@@ -101,8 +102,8 @@ impl Stack {
         };
         let mut inner_ids: Vec<u32> = entries
             .iter()
-            .filter(|&&(id, _, kind)| is_copper_kind(kind) && id != 0 && id != bottom_id)
-            .map(|&(id, _, _)| id)
+            .filter(|&&(id, _, kind, _)| is_copper_kind(kind) && id != 0 && id != bottom_id)
+            .map(|&(id, _, _, _)| id)
             .collect();
         inner_ids.sort_unstable();
 
@@ -110,9 +111,9 @@ impl Stack {
         let (mut top, mut bottom) = (None, None);
         let mut inner: Vec<(usize, StackLayer)> = Vec::new();
         let mut other: Vec<StackLayer> = Vec::new();
-        for &(id, name, kind) in &entries {
+        for &(id, name, kind, user_name) in &entries {
             if is_copper_kind(kind) {
-                let layer_type = if kind == "power" { "plane" } else { "copper" };
+                let layer_type = if kind == "power" { "plane" } else { "signal" };
                 let rank = inner_ids.iter().position(|&i| i == id);
                 let token = match (id, rank) {
                     (0, _) => "TopCopper".to_string(),
@@ -124,9 +125,19 @@ impl Stack {
                     }
                 };
                 aliases.insert(name.to_string(), token.clone());
+                // The board's own name for the layer: the user name it
+                // carries, or the layer's name when the user renamed it.
+                let display_name = match user_name.filter(|n| !n.is_empty()) {
+                    Some(n) => n.to_string(),
+                    None if crate::layers::token(name).as_deref() != Some(token.as_str()) => {
+                        name.to_string()
+                    }
+                    None => String::new(),
+                };
                 let layer = StackLayer {
                     token,
                     layer_type: layer_type.to_string(),
+                    display_name,
                 };
                 match (id, rank) {
                     (0, _) => top = Some(layer),
@@ -139,6 +150,7 @@ impl Stack {
                 Some(t) if !other.iter().any(|l| l.token == t) => other.push(StackLayer {
                     token: t,
                     layer_type: String::new(),
+                    display_name: String::new(),
                 }),
                 Some(_) => {}
                 None => {
@@ -215,7 +227,8 @@ impl Stack {
 fn copper(token: &str) -> StackLayer {
     StackLayer {
         token: token.to_string(),
-        layer_type: "copper".to_string(),
+        layer_type: "signal".to_string(),
+        display_name: String::new(),
     }
 }
 
@@ -242,6 +255,21 @@ mod tests {
         assert_eq!(stack.copper().len(), 4);
         let pads = stack.pad_layers(&["Top", "F.Mask"], &mut report);
         assert_eq!(pads, ["TopCopper", "TopSolderMask"]);
+        let names: Vec<(&str, &str, &str)> = stack
+            .layers
+            .iter()
+            .map(|l| (l.token.as_str(), l.layer_type.as_str(), l.display_name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("TopCopper", "signal", "Top"),
+                ("Inner1Copper", "plane", "GND"),
+                ("Inner2Copper", "plane", "3V3"),
+                ("BottomCopper", "signal", "Bottom"),
+                ("EdgeCuts", "", ""),
+            ]
+        );
     }
 
     #[test]

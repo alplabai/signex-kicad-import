@@ -2,18 +2,19 @@
 //
 // Copyright (C) 2026 alplab and contributors. See LICENSE.
 
-//! `signex-kicad-import` -- one-way converter from a KiCad board to the
+//! `signex-kicad-import` -- one-way converter from KiCad boards to the
 //! current Signex formats: `<stem>.snxpcb` plus a `<stem>.snxprj` that
-//! carries the project's net classes.
+//! carries the project's net classes, for each board.
 //!
-//! Input is a `.kicad_pcb`, or a `.kicad_pro` whose board has the same
-//! stem. Schematic conversion is not part of this release.
+//! Input is a `.kicad_pcb`, or a `.kicad_pro`, which converts every
+//! `.kicad_pcb` in the project's folder. Schematic conversion is not part
+//! of this release.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use kicad_parser::check::{EndCheck, track_ends};
+use kicad_parser::placement_check::{EndTally, tally_track_ends};
 use kicad_parser::{ProjectRules, Report, convert_pcb, parse_project_rules};
 use serde_json::{Value, json};
 
@@ -21,10 +22,10 @@ use serde_json::{Value, json};
 #[command(
     name = "signex-kicad-import",
     version,
-    about = "Convert a KiCad board (.kicad_pcb or .kicad_pro) to Signex native files"
+    about = "Convert KiCad boards (.kicad_pcb or .kicad_pro) to Signex native files"
 )]
 struct Cli {
-    /// A .kicad_pcb, or a .kicad_pro beside a .kicad_pcb of the same name.
+    /// A .kicad_pcb, or a .kicad_pro whose folder holds the boards.
     input: PathBuf,
 
     /// Output directory. Defaults to the input file's directory.
@@ -40,10 +41,11 @@ struct Cli {
     json: bool,
 }
 
+#[derive(Default)]
 struct Outcome {
     files: Vec<PathBuf>,
     report: Report,
-    ends: EndCheck,
+    ends: EndTally,
 }
 
 fn main() {
@@ -86,9 +88,9 @@ fn summary(result: &Result<Outcome>) -> Value {
                 "files": files,
                 "warnings": warnings,
                 "track_ends": {
-                    "total": outcome.ends.ends,
-                    "on_own_net_pad": outcome.ends.on_own_net_pad,
-                    "on_other_net_pad": outcome.ends.on_other_net_pad,
+                    "total": outcome.ends.total,
+                    "on_own_net_pad": outcome.ends.own_net,
+                    "on_other_net_pad": outcome.ends.other_net,
                 },
             })
         }
@@ -111,8 +113,14 @@ fn print_outcome(outcome: &Outcome) {
     }
     println!(
         "track ends: {} total, {} on a pad of their net, {} on another net's pad",
-        outcome.ends.ends, outcome.ends.on_own_net_pad, outcome.ends.on_other_net_pad
+        outcome.ends.total, outcome.ends.own_net, outcome.ends.other_net
     );
+}
+
+/// One board ready to write: both files' paths and text.
+struct Pending {
+    pcb: (PathBuf, String),
+    project: (PathBuf, String),
 }
 
 fn run(cli: &Cli) -> Result<Outcome> {
@@ -125,9 +133,9 @@ fn run(cli: &Cli) -> Result<Outcome> {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    let board_path = match ext.as_str() {
-        "kicad_pcb" => input.clone(),
-        "kicad_pro" => input.with_extension("kicad_pcb"),
+    let (boards, project_file) = match ext.as_str() {
+        "kicad_pcb" => (vec![input.clone()], None),
+        "kicad_pro" => (boards_beside(&input)?, Some(input.clone())),
         "kicad_sch" | "kicad_sym" => bail!(
             "schematic and symbol conversion is not part of this release; \
              convert the board (.kicad_pcb or .kicad_pro)"
@@ -145,40 +153,77 @@ fn run(cli: &Cli) -> Result<Outcome> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from(".")),
     };
-    let stem = board_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .with_context(|| format!("no usable file name: {}", board_path.display()))?
-        .to_string();
 
-    let text = std::fs::read_to_string(&board_path)
-        .with_context(|| format!("reading {}", board_path.display()))?;
-    let rules = read_rules(&board_path.with_extension("kicad_pro"))?;
-    let converted = convert_pcb(&text, rules.as_ref())
-        .with_context(|| format!("converting {}", board_path.display()))?;
-
-    let pcb_name = format!("{stem}.snxpcb");
-    let pcb_path = out_dir.join(&pcb_name);
-    let prj_path = out_dir.join(format!("{stem}.snxprj"));
-    for path in [&pcb_path, &prj_path] {
-        if path.exists() && !cli.force {
-            bail!("{} exists; pass --force to replace it", path.display());
+    // Convert and check every board before writing any, so a refused one
+    // leaves no partial output behind.
+    let mut outcome = Outcome::default();
+    let mut pending = Vec::new();
+    for board_path in &boards {
+        let stem = board_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .with_context(|| format!("no usable file name: {}", board_path.display()))?
+            .to_string();
+        let text = std::fs::read_to_string(board_path)
+            .with_context(|| format!("reading {}", board_path.display()))?;
+        let own_project = board_path.with_extension("kicad_pro");
+        let rules = match read_rules(&own_project)? {
+            Some(rules) => Some(rules),
+            None => match &project_file {
+                Some(p) => read_rules(p)?,
+                None => None,
+            },
+        };
+        let converted = convert_pcb(&text, rules.as_ref())
+            .with_context(|| format!("converting {}", board_path.display()))?;
+        let pcb_name = format!("{stem}.snxpcb");
+        let pcb_path = out_dir.join(&pcb_name);
+        let prj_path = out_dir.join(format!("{stem}.snxprj"));
+        for path in [&pcb_path, &prj_path] {
+            if path.exists() && !cli.force {
+                bail!("{} exists; pass --force to replace it", path.display());
+            }
         }
+        let tally = tally_track_ends(&converted.board);
+        outcome.ends.total += tally.total;
+        outcome.ends.own_net += tally.own_net;
+        outcome.ends.other_net += tally.other_net;
+        outcome.report.merge(&converted.report);
+        pending.push(Pending {
+            pcb: (pcb_path, snx_writer::write_board(&converted.board)),
+            project: (
+                prj_path,
+                snx_writer::write_project(&stem, &pcb_name, &converted.classes),
+            ),
+        });
     }
-    write_atomically(&pcb_path, &snx_writer::write_board(&converted.board))?;
-    write_atomically(
-        &prj_path,
-        &snx_writer::write_project(&stem, &pcb_name, &converted.classes),
-    )?;
-    Ok(Outcome {
-        files: vec![pcb_path, prj_path],
-        ends: track_ends(&converted.board),
-        report: converted.report,
-    })
+    for board in pending {
+        write_pair(&board)?;
+        outcome.files.push(board.pcb.0);
+        outcome.files.push(board.project.0);
+    }
+    Ok(outcome)
+}
+
+/// Every `.kicad_pcb` in the project file's folder, by name.
+fn boards_beside(project: &Path) -> Result<Vec<PathBuf>> {
+    let dir = project
+        .parent()
+        .with_context(|| format!("project file has no folder: {}", project.display()))?;
+    let mut boards: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("kicad_pcb")))
+        .collect();
+    boards.sort();
+    if boards.is_empty() {
+        bail!("{} holds no .kicad_pcb to convert", dir.display());
+    }
+    Ok(boards)
 }
 
 /// The project file's classes and rules; `None` when there is no project
-/// file beside the board.
+/// file there.
 fn read_rules(path: &Path) -> Result<Option<ProjectRules>> {
     if !path.exists() {
         return Ok(None);
@@ -190,18 +235,43 @@ fn read_rules(path: &Path) -> Result<Option<ProjectRules>> {
     Ok(Some(rules))
 }
 
-/// Write `text` to a temporary file beside `path`, flush it to disk, then
-/// rename it over `path`, so a failed write never leaves a half file.
-fn write_atomically(path: &Path, text: &str) -> Result<()> {
+fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension("tmp-import")
+}
+
+/// Write a board's two files so that a `.snxpcb` never stands without its
+/// `.snxprj`: both go to temporary files first, the project file takes its
+/// place before the board does, and a failure removes the temporary files.
+fn write_pair(board: &Pending) -> Result<()> {
+    let result = write_pair_steps(board);
+    if result.is_err() {
+        for (path, _) in [&board.pcb, &board.project] {
+            // Best effort: a temporary file that was never made is fine.
+            let _ = std::fs::remove_file(temp_path(path));
+        }
+    }
+    result
+}
+
+fn write_pair_steps(board: &Pending) -> Result<()> {
+    write_temp(&board.pcb.0, &board.pcb.1)?;
+    write_temp(&board.project.0, &board.project.1)?;
+    for (path, _) in [&board.project, &board.pcb] {
+        std::fs::rename(temp_path(path), path)
+            .with_context(|| format!("replacing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Write `text` to the temporary file beside `path` and flush it to disk.
+fn write_temp(path: &Path, text: &str) -> Result<()> {
     use std::io::Write as _;
 
-    let tmp = path.with_extension("tmp-import");
+    let tmp = temp_path(path);
     let mut file =
         std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     file.write_all(text.as_bytes())
         .and_then(|()| file.sync_all())
         .with_context(|| format!("writing {}", tmp.display()))?;
-    drop(file);
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
 }

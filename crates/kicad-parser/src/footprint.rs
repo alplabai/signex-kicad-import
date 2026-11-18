@@ -4,29 +4,33 @@
 
 //! Footprints and their pads.
 //!
-//! The source stores a footprint's children in its local frame as placed:
-//! a bottom-side footprint's children are already mirrored, and a pad's
-//! angle is its angle on the board. Signex keeps library-local children
-//! and mirrors x itself for a bottom-side footprint, and turns the other
+//! The source stores a footprint's children in its local frame as placed,
+//! and a pad's or text's angle is its angle on the board. Flipping a
+//! footprint to the bottom negates local y and turns it by a half turn
+//! (angle `a` becomes `180 - a`). Signex keeps library-side-up children and
+//! mirrors local x itself for a bottom-side footprint, and turns the other
 //! way (the source turns counter-clockwise on screen with y down; Signex
-//! applies the plain rotation matrix to y-down coordinates). So:
+//! applies the plain rotation matrix to y-down coordinates). So, with
+//! footprint angle `a` and a pad or text angle `p`:
 //!
-//! * the footprint's Signex angle is the negated source angle;
-//! * a local point keeps its coordinates on top and has x negated on the
-//!   bottom, which puts it at the same board position;
-//! * a pad's own turn is `footprint angle - pad angle` on top and
-//!   `pad angle - footprint angle` on the bottom.
+//! * top: local `(x, y)`, Signex angle `-a`, own turn `a - p`;
+//! * bottom: local `(x, -y)` (the library side up again), Signex angle
+//!   `180 - a`, own turn `180 - a + p`;
+//! * a corner in a pad's own frame (a custom or trapezoid outline) keeps
+//!   its coordinates on top and has x negated on the bottom.
+//!
+//! Each puts every point at the board position the source gives it.
 
 use snx_writer::model::{Footprint, FootprintGraphic, Pad, PadShape, PadType, Point, Property};
 
 use crate::geometry::{
     at_of, circumcenter, mirror_x, normalize_deg, number_of, point_args, point_of, stroke_width,
-    twice_area,
 };
 use crate::ids::Ids;
 use crate::layers::Stack;
 use crate::nets::NetTable;
 use crate::report::Report;
+use crate::ring::{is_simple_ring, to_nm};
 use crate::sexpr::{Atom, SExpr};
 
 /// The shared state footprint conversion reads and updates.
@@ -45,22 +49,33 @@ struct Frame {
 }
 
 impl Frame {
+    /// A footprint-local point, library side up.
     fn local(self, p: Point) -> Point {
-        mirror_x(p, self.bottom)
+        if self.bottom { Point::new(p.x, -p.y) } else { p }
     }
 
-    /// A pad's own turn in the Signex footprint frame from its source angle.
-    fn own_turn(self, pad_angle: f64) -> f64 {
+    /// A corner in a pad's own frame.
+    fn pad_corner(self, c: Point) -> Point {
+        mirror_x(c, self.bottom)
+    }
+
+    /// The footprint's Signex angle.
+    fn rotation(self) -> f64 {
         if self.bottom {
-            normalize_deg(pad_angle - self.angle)
+            normalize_deg(180.0 - self.angle)
         } else {
-            normalize_deg(self.angle - pad_angle)
+            normalize_deg(-self.angle)
         }
     }
 
-    /// A text's turn in the footprint frame, by the same rule as a pad's.
-    fn text_turn(self, angle: f64) -> f64 {
-        self.own_turn(angle)
+    /// A pad's or text's own turn in the Signex footprint frame from its
+    /// angle on the board.
+    fn own_turn(self, angle: f64) -> f64 {
+        if self.bottom {
+            normalize_deg(180.0 - self.angle + angle)
+        } else {
+            normalize_deg(self.angle - angle)
+        }
     }
 }
 
@@ -125,13 +140,30 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
             properties.push(property(node, frame, cx.stack));
         }
     }
+    // Older files keep the designator and value as `fp_text reference` /
+    // `fp_text value`; they become the Reference and Value fields.
+    for (kind, key) in [("reference", "Reference"), ("value", "Value")] {
+        if properties.iter().any(|p| p.key == key) {
+            continue;
+        }
+        if let Some(text) = fp
+            .find_all("fp_text")
+            .into_iter()
+            .find(|t| t.first_arg() == Some(kind))
+        {
+            let mut prop = property(text, frame, cx.stack);
+            prop.key = key.to_string();
+            prop.value = text.arg(1).unwrap_or("").to_string();
+            properties.push(prop);
+        }
+    }
     Footprint {
         uuid,
         reference: field(fp, "Reference", "reference"),
         value,
         footprint_id: fp.first_arg().unwrap_or("").to_string(),
         position,
-        rotation: normalize_deg(-angle),
+        rotation: frame.rotation(),
         layer: if bottom { "BottomCopper" } else { "TopCopper" }.to_string(),
         locked: has_flag(fp, "locked"),
         pads,
@@ -145,10 +177,10 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
 const IMPORTED_VALUE_KEY: &str = "ALTIUM_VALUE";
 
 /// A footprint field that records the source tool's own bookkeeping (its
-/// schematic sheet files, its library descriptions, its `ki_` keys), not
-/// the board: dropped, since Signex keeps its own schematic link.
+/// schematic sheet files and its `ki_` keys), not the part: dropped, since
+/// Signex keeps its own schematic link. A part's Description stays.
 fn is_source_metadata(key: &str) -> bool {
-    matches!(key, "Sheetfile" | "Sheetname" | "Description") || key.starts_with("ki_")
+    matches!(key, "Sheetfile" | "Sheetname") || key.starts_with("ki_")
 }
 
 fn pad_type(token: &str) -> PadType {
@@ -303,12 +335,12 @@ fn custom_or(
     fallback: PadShape,
     report: &mut Report,
 ) -> PadShape {
-    let mut ring: Vec<Point> = corners.into_iter().map(|c| frame.local(c)).collect();
+    let mut ring: Vec<Point> = corners.into_iter().map(|c| frame.pad_corner(c)).collect();
     ring.dedup_by(|a, b| nm_eq(*a, *b));
     while ring.len() > 1 && nm_eq(ring[0], ring[ring.len() - 1]) {
         ring.pop();
     }
-    if is_simple(&ring) {
+    if is_simple_ring(&ring) {
         PadShape::Custom(ring)
     } else {
         report.note("pad outline not a simple polygon; anchor shape kept");
@@ -316,64 +348,8 @@ fn custom_or(
     }
 }
 
-fn nm(v: f64) -> i64 {
-    (v * 1.0e6).round() as i64
-}
-
 fn nm_eq(a: Point, b: Point) -> bool {
-    nm(a.x) == nm(b.x) && nm(a.y) == nm(b.y)
-}
-
-/// At least three corners, an area, and no two edges that cross or fold
-/// back, measured on the whole-nanometre corners the file stores.
-fn is_simple(ring: &[Point]) -> bool {
-    let n = ring.len();
-    if n < 3 || twice_area(ring) == 0.0 {
-        return false;
-    }
-    let p: Vec<(i128, i128)> = ring
-        .iter()
-        .map(|c| (i128::from(nm(c.x)), i128::from(nm(c.y))))
-        .collect();
-    let cross = |o: (i128, i128), a: (i128, i128), b: (i128, i128)| {
-        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
-    };
-    for i in 0..n {
-        let (a, b) = (p[i], p[(i + 1) % n]);
-        if a == b {
-            return false;
-        }
-        for j in i + 1..n {
-            let (c, d) = (p[j], p[(j + 1) % n]);
-            let neighbours = j == i + 1 || (i == 0 && j == n - 1);
-            if neighbours {
-                // Collinear neighbours that turn back overlap.
-                let (shared, from, to) = if j == i + 1 { (b, a, d) } else { (a, b, c) };
-                let back = (from.0 - shared.0) * (to.0 - shared.0)
-                    + (from.1 - shared.1) * (to.1 - shared.1);
-                if cross(shared, from, to) == 0 && back > 0 {
-                    return false;
-                }
-                continue;
-            }
-            let (d1, d2) = (cross(a, b, c).signum(), cross(a, b, d).signum());
-            let (d3, d4) = (cross(c, d, a).signum(), cross(c, d, b).signum());
-            if d1 * d2 <= 0 && d3 * d4 <= 0 && (d1 != 0 || d2 != 0 || d3 != 0 || d4 != 0) {
-                return false;
-            }
-            if d1 == 0 && d2 == 0 && d3 == 0 && d4 == 0 && overlaps_on_line(a, b, c, d) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn overlaps_on_line(a: (i128, i128), b: (i128, i128), c: (i128, i128), d: (i128, i128)) -> bool {
-    let span = |p: i128, q: i128| (p.min(q), p.max(q));
-    let ((ax0, ax1), (cx0, cx1)) = (span(a.0, b.0), span(c.0, d.0));
-    let ((ay0, ay1), (cy0, cy1)) = (span(a.1, b.1), span(c.1, d.1));
-    ax0 <= cx1 && cx0 <= ax1 && ay0 <= cy1 && cy0 <= ay1
+    to_nm(a.x) == to_nm(b.x) && to_nm(a.y) == to_nm(b.y)
 }
 
 fn font_size(node: &SExpr) -> Option<f64> {
@@ -393,7 +369,7 @@ fn property(node: &SExpr, frame: Frame, stack: &Stack) -> Property {
         key: node.first_arg().unwrap_or("").to_string(),
         value: node.arg(1).unwrap_or("").to_string(),
         position: node.find("at").map(|_| frame.local(at)),
-        rotation: frame.text_turn(angle),
+        rotation: frame.own_turn(angle),
         layer: node
             .find("layer")
             .and_then(SExpr::first_arg)
@@ -474,18 +450,16 @@ fn graphic(
             }
         }
         _ => {
-            if is_hidden(node) {
+            // The designator and value texts are the Reference and Value
+            // fields (see `convert`), not drawings.
+            if is_hidden(node) || matches!(node.first_arg(), Some("reference" | "value")) {
                 return None;
             }
             let (at, angle) = at_of(node);
-            g.text = match node.first_arg() {
-                Some("reference") => "%R".to_string(),
-                Some("value") => "%V".to_string(),
-                _ => node.arg(1).unwrap_or("").to_string(),
-            };
+            g.text = node.arg(1).unwrap_or("").to_string();
             g.font_size = font_size(node).unwrap_or(1.0);
             g.position = Some(frame.local(at));
-            g.rotation = frame.text_turn(angle);
+            g.rotation = frame.own_turn(angle);
         }
     }
     Some(g)

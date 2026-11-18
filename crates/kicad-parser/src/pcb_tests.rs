@@ -3,7 +3,7 @@
 // Copyright (C) 2026 alplab and contributors. See LICENSE.
 
 use super::*;
-use crate::check::track_ends;
+use crate::placement_check::tally_track_ends;
 
 const BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "pcbnew")
   (general (thickness 1.2))
@@ -62,10 +62,10 @@ fn the_largest_edge_ring_is_the_outline_and_cutouts_stay_drawings() {
 
 #[test]
 fn track_ends_land_on_their_own_pads_once_placed() {
-    let check = track_ends(&converted().board);
-    assert_eq!(check.ends, 4);
-    assert_eq!(check.on_own_net_pad, 3);
-    assert_eq!(check.on_other_net_pad, 0);
+    let tally = tally_track_ends(&converted().board);
+    assert_eq!(tally.total, 4);
+    assert_eq!(tally.own_net, 3);
+    assert_eq!(tally.other_net, 0);
 }
 
 #[test]
@@ -89,6 +89,23 @@ fn the_same_input_writes_the_same_file() {
     let a = snx_writer::write_board(&converted().board);
     let b = snx_writer::write_board(&converted().board);
     assert_eq!(a, b);
+}
+
+#[test]
+fn the_board_origin_is_the_aux_origin_else_the_grid_origin() {
+    let origin = |setup: &str| {
+        let text = format!(r#"(kicad_pcb (layers (0 "F.Cu" signal) (31 "B.Cu" signal)) {setup})"#);
+        convert_pcb(&text, None).expect("converts").board.origin
+    };
+    assert_eq!(
+        origin("(setup (aux_axis_origin 10 20) (grid_origin 1 2))"),
+        Some(Point::new(10.0, 20.0))
+    );
+    assert_eq!(
+        origin("(setup (aux_axis_origin 0 0) (grid_origin 1 2))"),
+        Some(Point::new(1.0, 2.0))
+    );
+    assert_eq!(origin("(setup (pad_to_mask_clearance 0))"), None);
 }
 
 #[test]

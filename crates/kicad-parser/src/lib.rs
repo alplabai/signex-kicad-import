@@ -19,7 +19,6 @@
 //! Signex mirrors itself on the bottom side, and Signex rotation sense.
 
 mod board_graphics;
-pub mod check;
 pub mod error;
 mod footprint;
 mod geometry;
@@ -28,8 +27,10 @@ mod layers;
 mod nets;
 mod outline;
 pub mod pcb;
+pub mod placement_check;
 pub mod project;
 mod report;
+mod ring;
 pub mod sexpr;
 mod zones;
 

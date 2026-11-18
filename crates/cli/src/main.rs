@@ -235,8 +235,12 @@ fn read_rules(path: &Path) -> Result<Option<ProjectRules>> {
     Ok(Some(rules))
 }
 
+/// The temporary file beside `path`: its whole name plus `.tmp-import`, so
+/// a board's two files (same stem) get two different temporary files.
 fn temp_path(path: &Path) -> PathBuf {
-    path.with_extension("tmp-import")
+    let mut name = path.as_os_str().to_owned();
+    name.push(".tmp-import");
+    PathBuf::from(name)
 }
 
 /// Write a board's two files so that a `.snxpcb` never stands without its
@@ -274,4 +278,33 @@ fn write_temp(path: &Path, text: &str) -> Result<()> {
         .and_then(|()| file.sync_all())
         .with_context(|| format!("writing {}", tmp.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_boards_two_files_get_two_temporary_files() {
+        let pcb = temp_path(Path::new("out/board.snxpcb"));
+        let prj = temp_path(Path::new("out/board.snxprj"));
+        assert_ne!(pcb, prj);
+        assert_eq!(pcb, Path::new("out/board.snxpcb.tmp-import"));
+    }
+
+    #[test]
+    fn a_pair_is_written_and_leaves_no_temporary_file() {
+        let dir = std::env::temp_dir().join(format!("snx-pair-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a folder");
+        let board = Pending {
+            pcb: (dir.join("b.snxpcb"), "pcb".into()),
+            project: (dir.join("b.snxprj"), "prj".into()),
+        };
+        write_pair(&board).expect("writes");
+        assert_eq!(std::fs::read_to_string(&board.pcb.0).expect("pcb"), "pcb");
+        assert_eq!(std::fs::read_to_string(&board.project.0).expect("prj"), "prj");
+        assert!(!temp_path(&board.pcb.0).exists());
+        assert!(!temp_path(&board.project.0).exists());
+        std::fs::remove_dir_all(&dir).expect("cleans up");
+    }
 }

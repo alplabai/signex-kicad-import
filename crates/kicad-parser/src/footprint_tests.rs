@@ -168,3 +168,22 @@ fn source_tool_bookkeeping_fields_are_dropped() {
     assert_eq!(keys, ["Reference", "MPN"]);
     assert!(report.summary().contains("3 x source-tool metadata field dropped"));
 }
+
+#[test]
+fn an_imported_library_value_fills_an_empty_value_and_is_dropped() {
+    let (fp, report) = convert_text(
+        r#"(footprint "Lib:C" (layer "F.Cu") (at 0 0)
+  (property "Reference" "C1" (at 0 0 0) (layer "F.SilkS"))
+  (property "Value" "")
+  (property "ALTIUM_VALUE" "100nF"))"#,
+    );
+    assert_eq!(fp.value, "100nF");
+    assert!(fp.properties.iter().all(|p| p.key != "ALTIUM_VALUE"));
+    assert!(report.summary().contains("imported-library value field used as the empty Value"));
+    let (kept, _) = convert_text(
+        r#"(footprint "Lib:C" (layer "F.Cu") (at 0 0)
+  (property "Value" "10uF")
+  (property "ALTIUM_VALUE" "100nF"))"#,
+    );
+    assert_eq!(kept.value, "10uF");
+}

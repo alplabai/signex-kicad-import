@@ -105,9 +105,21 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
             graphics.push(g);
         }
     }
+    let mut value = field(fp, "Value", "value");
     let mut properties = Vec::new();
     for node in fp.find_all("property") {
-        if is_source_metadata(node.first_arg().unwrap_or("")) {
+        let key = node.first_arg().unwrap_or("");
+        if key.eq_ignore_ascii_case(IMPORTED_VALUE_KEY) {
+            // A value a part brought from another tool's library: it fills an
+            // empty Value, and the field itself is dropped.
+            let imported = node.arg(1).unwrap_or("");
+            if value.is_empty() && !imported.is_empty() {
+                value = imported.to_string();
+                cx.report.note("imported-library value field used as the empty Value");
+            } else {
+                cx.report.note("imported-library value field dropped");
+            }
+        } else if is_source_metadata(key) {
             cx.report.note("source-tool metadata field dropped");
         } else {
             properties.push(property(node, frame, cx.stack));
@@ -116,7 +128,7 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
     Footprint {
         uuid,
         reference: field(fp, "Reference", "reference"),
-        value: field(fp, "Value", "value"),
+        value,
         footprint_id: fp.first_arg().unwrap_or("").to_string(),
         position,
         rotation: normalize_deg(-angle),
@@ -127,6 +139,10 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
         properties,
     }
 }
+
+/// The field a part imported from a binary-layout tool's library carries
+/// its value in.
+const IMPORTED_VALUE_KEY: &str = "ALTIUM_VALUE";
 
 /// A footprint field that records the source tool's own bookkeeping (its
 /// schematic sheet files, its library descriptions, its `ki_` keys), not

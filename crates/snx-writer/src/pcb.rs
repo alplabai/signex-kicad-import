@@ -161,7 +161,11 @@ fn outline_cell(corners: &[Point]) -> String {
 }
 
 fn pad_table(footprints: &[Footprint]) -> String {
-    let pads = || footprints.iter().flat_map(|fp| fp.pads.iter().map(move |p| (fp, p)));
+    let pads = || {
+        footprints
+            .iter()
+            .flat_map(|fp| fp.pads.iter().map(move |p| (fp, p)))
+    };
     let has_rotation = pads().any(|(_, p)| p.rotation != 0.0);
     let has_outline = pads().any(|(_, p)| matches!(p.shape, PadShape::Custom(_)));
     let mut names = vec![

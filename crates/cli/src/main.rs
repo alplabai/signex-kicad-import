@@ -213,7 +213,10 @@ fn boards_beside(project: &Path) -> Result<Vec<PathBuf>> {
     let mut boards: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("kicad_pcb")))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("kicad_pcb"))
+        })
         .collect();
     boards.sort();
     if boards.is_empty() {
@@ -302,7 +305,10 @@ mod tests {
         };
         write_pair(&board).expect("writes");
         assert_eq!(std::fs::read_to_string(&board.pcb.0).expect("pcb"), "pcb");
-        assert_eq!(std::fs::read_to_string(&board.project.0).expect("prj"), "prj");
+        assert_eq!(
+            std::fs::read_to_string(&board.project.0).expect("prj"),
+            "prj"
+        );
         assert!(!temp_path(&board.pcb.0).exists());
         assert!(!temp_path(&board.project.0).exists());
         std::fs::remove_dir_all(&dir).expect("cleans up");

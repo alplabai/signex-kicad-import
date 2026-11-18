@@ -132,7 +132,11 @@ fn shape(node: &SExpr, layer: String, ids: &mut Ids) -> Option<BoardGraphic> {
                 return Some(g);
             };
             let increasing = sweeps_up(center, start, mid, end);
-            let (from, to) = if increasing { (start, end) } else { (end, start) };
+            let (from, to) = if increasing {
+                (start, end)
+            } else {
+                (end, start)
+            };
             g.graphic_type = "arc".to_string();
             g.radius = (from.x - center.x).hypot(from.y - center.y);
             g.center = Some(center);
@@ -161,7 +165,12 @@ fn sweeps_up(center: Point, start: Point, mid: Point, end: Point) -> bool {
 
 fn poly_points(node: &SExpr) -> Vec<Point> {
     node.find("pts")
-        .map(|pts| pts.find_all("xy").into_iter().filter_map(point_args).collect())
+        .map(|pts| {
+            pts.find_all("xy")
+                .into_iter()
+                .filter_map(point_args)
+                .collect()
+        })
         .unwrap_or_default()
 }
 

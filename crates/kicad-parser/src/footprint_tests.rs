@@ -105,7 +105,15 @@ fn a_bottom_pad_lands_where_the_source_puts_it() {
     let expected = source_world(Point::new(5.0, 6.0), 120.0, Point::new(1.27, -2.54));
     assert_near(signex_world(&fp, pad.position), expected);
     assert_eq!(pad.drill, Some(1.0));
-    assert_eq!(pad.layers, ["TopCopper", "BottomCopper", "TopSolderMask", "BottomSolderMask"]);
+    assert_eq!(
+        pad.layers,
+        [
+            "TopCopper",
+            "BottomCopper",
+            "TopSolderMask",
+            "BottomSolderMask"
+        ]
+    );
     let custom = &fp.pads[1];
     assert!((signex_pad_angle(&fp, custom) - normalize_deg(-200.0)).abs() < 1e-9);
 }
@@ -160,16 +168,19 @@ fn a_flipped_footprint_keeps_its_library_pad_coordinates() {
         // Flipping in Signex turns a part the other way, as the source's
         // flip did: the bottom rotation is the top one negated.
         let expected = normalize_deg(-top.rotation);
-        assert!((bottom.rotation - expected).abs() < 1e-9, "{a}: {}", bottom.rotation);
+        assert!(
+            (bottom.rotation - expected).abs() < 1e-9,
+            "{a}: {}",
+            bottom.rotation
+        );
         // A rectangle half a turn round is the same copper.
-        let (t, b) = (top.pads[0].rotation % 180.0, bottom.pads[0].rotation % 180.0);
+        let (t, b) = (
+            top.pads[0].rotation % 180.0,
+            bottom.pads[0].rotation % 180.0,
+        );
         assert!((t - b).abs() < 1e-9, "{a}: own turns {t} and {b}");
         // And the flipped pad lands where the source puts it.
-        let source = source_world(
-            Point::new(50.0, 40.0),
-            180.0 - a,
-            Point::new(1.0, -0.5),
-        );
+        let source = source_world(Point::new(50.0, 40.0), 180.0 - a, Point::new(1.0, -0.5));
         assert_near(signex_world(&bottom, bottom.pads[0].position), source);
     }
 }
@@ -186,13 +197,24 @@ fn designator_and_value_texts_become_fields() {
     );
     assert_eq!(fp.reference, "R7");
     assert_eq!(fp.value, "4k7");
-    let reference = fp.properties.iter().find(|p| p.key == "Reference").expect("Reference");
+    let reference = fp
+        .properties
+        .iter()
+        .find(|p| p.key == "Reference")
+        .expect("Reference");
     assert_eq!(reference.value, "R7");
     assert_eq!(reference.layer.as_deref(), Some("BottomSilkscreen"));
     assert_eq!(reference.font_size, Some(1.2));
-    assert_near(reference.position.expect("a position"), Point::new(0.0, 1.5));
+    assert_near(
+        reference.position.expect("a position"),
+        Point::new(0.0, 1.5),
+    );
     assert!(!reference.hidden);
-    let value = fp.properties.iter().find(|p| p.key == "Value").expect("Value");
+    let value = fp
+        .properties
+        .iter()
+        .find(|p| p.key == "Value")
+        .expect("Value");
     assert!(value.hidden);
     let texts: Vec<&str> = fp
         .graphics
@@ -215,7 +237,11 @@ fn source_tool_bookkeeping_fields_are_dropped() {
     );
     let keys: Vec<&str> = fp.properties.iter().map(|p| p.key.as_str()).collect();
     assert_eq!(keys, ["Reference", "MPN"]);
-    assert!(report.summary().contains("3 x source-tool metadata field dropped"));
+    assert!(
+        report
+            .summary()
+            .contains("3 x source-tool metadata field dropped")
+    );
 }
 
 #[test]
@@ -228,7 +254,11 @@ fn an_imported_library_value_fills_an_empty_value_and_is_dropped() {
     );
     assert_eq!(fp.value, "100nF");
     assert!(fp.properties.iter().all(|p| p.key != "ALTIUM_VALUE"));
-    assert!(report.summary().contains("imported-library value field used as the empty Value"));
+    assert!(
+        report
+            .summary()
+            .contains("imported-library value field used as the empty Value")
+    );
     let (kept, _) = convert_text(
         r#"(footprint "Lib:C" (layer "F.Cu") (at 0 0)
   (property "Value" "10uF")

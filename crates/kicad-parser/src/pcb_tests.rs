@@ -39,7 +39,10 @@ fn a_board_converts_into_signex_layers_and_nets() {
     let b = &c.board;
     assert_eq!(b.thickness, 1.2);
     let tokens: Vec<&str> = b.layers.iter().map(|l| l.token.as_str()).collect();
-    assert_eq!(tokens, ["TopCopper", "BottomCopper", "TopSilkscreen", "EdgeCuts"]);
+    assert_eq!(
+        tokens,
+        ["TopCopper", "BottomCopper", "TopSilkscreen", "EdgeCuts"]
+    );
     assert_eq!(b.nets.len(), 2);
     assert_eq!(b.footprints[0].layer, "BottomCopper");
     assert_eq!(b.footprints[0].reference, "J1");
@@ -55,7 +58,11 @@ fn a_board_converts_into_signex_layers_and_nets() {
 fn the_largest_edge_ring_is_the_outline_and_cutouts_stay_drawings() {
     let b = converted().board;
     assert_eq!(b.outline.len(), 4);
-    let edges: Vec<&BoardGraphic> = b.graphics.iter().filter(|g| g.layer == "EdgeCuts").collect();
+    let edges: Vec<&BoardGraphic> = b
+        .graphics
+        .iter()
+        .filter(|g| g.layer == "EdgeCuts")
+        .collect();
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].graphic_type, "circle");
 }

@@ -29,9 +29,12 @@ pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
         .as_array()
         .map(|list| list.iter().filter_map(class_of).collect())
         .unwrap_or_default();
-    for entry in settings["netclass_patterns"].as_array().into_iter().flatten() {
-        let (Some(name), Some(pattern)) =
-            (entry["netclass"].as_str(), entry["pattern"].as_str())
+    for entry in settings["netclass_patterns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let (Some(name), Some(pattern)) = (entry["netclass"].as_str(), entry["pattern"].as_str())
         else {
             continue;
         };
@@ -63,7 +66,10 @@ pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
 }
 
 fn mm(value: &Value) -> f64 {
-    value.as_f64().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(0.0)
+    value
+        .as_f64()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(0.0)
 }
 
 fn class_of(value: &Value) -> Option<NetClass> {

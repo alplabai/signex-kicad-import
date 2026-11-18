@@ -46,7 +46,10 @@ fn segments_meet(p1: Corner, p2: Corner, p3: Corner, p4: Corner) -> bool {
 
 /// Two edges that follow each other turn straight back along themselves.
 fn folds_back(prev: Corner, at: Corner, next: Corner) -> bool {
-    let (u, v) = ((at.0 - prev.0, at.1 - prev.1), (next.0 - at.0, next.1 - at.1));
+    let (u, v) = (
+        (at.0 - prev.0, at.1 - prev.1),
+        (next.0 - at.0, next.1 - at.1),
+    );
     let cross = u.0 * v.1 - u.1 * v.0;
     let dot = u.0 * v.0 + u.1 * v.1;
     cross == 0 && dot < 0
@@ -121,13 +124,7 @@ mod tests {
         let flat = ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
         assert!(!is_simple_ring(&flat));
         assert!(!is_simple_ring(&ring(&[(0.0, 0.0), (1.0, 1.0)])));
-        let touching = ring(&[
-            (0.0, 0.0),
-            (4.0, 0.0),
-            (4.0, 4.0),
-            (2.0, 0.0),
-            (0.0, 4.0),
-        ]);
+        let touching = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (2.0, 0.0), (0.0, 4.0)]);
         assert!(!is_simple_ring(&touching));
     }
 }

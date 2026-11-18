@@ -22,7 +22,11 @@ fn sample() -> Board {
         rotation,
         drill: None,
         drill_shape: String::new(),
-        layers: vec!["TopCopper".into(), "TopPaste".into(), "TopSolderMask".into()],
+        layers: vec![
+            "TopCopper".into(),
+            "TopPaste".into(),
+            "TopSolderMask".into(),
+        ],
         net: Some(Net {
             number: 1,
             name: "GND".into(),
@@ -255,6 +259,8 @@ fn zones_arcs_and_extras_land_in_their_tables() {
     assert_eq!(fp["locked"].as_bool(), Some(true));
     assert_eq!(fp["graphics"][0]["end"]["x"].as_float(), Some(1.0));
     assert_eq!(fp["properties"][0]["value"].as_str(), Some("U 1"));
-    let outline = value["extras"]["board"]["outline"].as_array().expect("outline");
+    let outline = value["extras"]["board"]["outline"]
+        .as_array()
+        .expect("outline");
     assert_eq!(outline.len(), 4);
 }

@@ -51,7 +51,11 @@ struct Frame {
 impl Frame {
     /// A footprint-local point, library side up.
     fn local(self, p: Point) -> Point {
-        if self.bottom { Point::new(p.x, -p.y) } else { p }
+        if self.bottom {
+            Point::new(p.x, -p.y)
+        } else {
+            p
+        }
     }
 
     /// A corner in a pad's own frame.
@@ -105,7 +109,10 @@ fn field(fp: &SExpr, property: &str, text_kind: &str) -> String {
 
 pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
     let (position, angle) = at_of(fp);
-    let side = fp.find("layer").and_then(SExpr::first_arg).unwrap_or("F.Cu");
+    let side = fp
+        .find("layer")
+        .and_then(SExpr::first_arg)
+        .unwrap_or("F.Cu");
     let bottom = cx.stack.token(side).as_deref() == Some("BottomCopper");
     let frame = Frame { angle, bottom };
     let uuid = cx.ids.of(fp, cx.report);
@@ -130,7 +137,8 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
             let imported = node.arg(1).unwrap_or("");
             if value.is_empty() && !imported.is_empty() {
                 value = imported.to_string();
-                cx.report.note("imported-library value field used as the empty Value");
+                cx.report
+                    .note("imported-library value field used as the empty Value");
             } else {
                 cx.report.note("imported-library value field dropped");
             }
@@ -262,7 +270,10 @@ fn pad_shape(node: &SExpr, size: Point, frame: Frame, report: &mut Report) -> Pa
         "circle" => PadShape::Circle,
         "oval" => PadShape::Oval,
         "roundrect" => {
-            if node.find("chamfer_ratio").is_some_and(|c| c.arg_f64(0) != Some(0.0)) {
+            if node
+                .find("chamfer_ratio")
+                .is_some_and(|c| c.arg_f64(0) != Some(0.0))
+            {
                 report.note("chamfered pad corners written as round corners");
             }
             let ratio = number_of(node, "roundrect_rratio").unwrap_or(0.25);
@@ -313,9 +324,12 @@ fn custom_pad(node: &SExpr, frame: Frame, report: &mut Report) -> PadShape {
     for primitive in primitives {
         match primitive.keyword() {
             Some("gr_poly") if polygon.is_none() => {
-                polygon = primitive
-                    .find("pts")
-                    .map(|pts| pts.find_all("xy").into_iter().filter_map(point_args).collect());
+                polygon = primitive.find("pts").map(|pts| {
+                    pts.find_all("xy")
+                        .into_iter()
+                        .filter_map(point_args)
+                        .collect()
+                });
             }
             Some(kind) => report.note(format!("custom pad primitive {kind} dropped")),
             None => {}
@@ -445,7 +459,10 @@ fn graphic(
                         .collect()
                 })
                 .unwrap_or_default();
-            if node.find("pts").is_some_and(|pts| pts.find("arc").is_some()) {
+            if node
+                .find("pts")
+                .is_some_and(|pts| pts.find("arc").is_some())
+            {
                 report.note("arc inside a footprint polygon dropped");
             }
         }

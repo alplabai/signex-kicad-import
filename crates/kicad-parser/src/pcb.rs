@@ -4,7 +4,9 @@
 
 //! A `.kicad_pcb` into the `snx-writer` board model.
 
-use snx_writer::model::{Board, BoardGraphic, NetClass, Point, Setup, Track, TrackArc, Via, ViaType};
+use snx_writer::model::{
+    Board, BoardGraphic, NetClass, Point, Setup, Track, TrackArc, Via, ViaType,
+};
 
 use crate::board_graphics;
 use crate::error::ParseError;
@@ -32,7 +34,9 @@ pub struct Converted {
 pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted, ParseError> {
     let root = sexpr::parse(text)?;
     if root.keyword() != Some("kicad_pcb") {
-        return Err(ParseError::InvalidSExpr("not a KiCad board file".to_string()));
+        return Err(ParseError::InvalidSExpr(
+            "not a KiCad board file".to_string(),
+        ));
     }
     let mut report = Report::default();
     let mut ids = Ids::seeded(text);
@@ -127,12 +131,7 @@ fn edge(
 }
 
 /// The copper layer an item names, or `None` (reported) when it is not one.
-fn copper_layer(
-    node: &SExpr,
-    stack: &Stack,
-    what: &str,
-    report: &mut Report,
-) -> Option<String> {
+fn copper_layer(node: &SExpr, stack: &Stack, what: &str, report: &mut Report) -> Option<String> {
     let name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
     match stack.token(name) {
         Some(t) if is_copper(&t) => Some(t),

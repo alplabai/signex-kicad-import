@@ -72,7 +72,10 @@ impl<'b> Grid<'b> {
         let cell = (2.0 * widest).max(0.1);
         let mut cells: HashMap<(i64, i64), Vec<Site<'b>>> = HashMap::new();
         for site in sites {
-            cells.entry(Self::key(cell, site.at)).or_default().push(site);
+            cells
+                .entry(Self::key(cell, site.at))
+                .or_default()
+                .push(site);
         }
         Self { cell, cells }
     }
@@ -90,12 +93,7 @@ impl<'b> Grid<'b> {
                 let Some(bucket) = self.cells.get(&(kx + dx, ky + dy)) else {
                     continue;
                 };
-                nets.extend(
-                    bucket
-                        .iter()
-                        .filter(|s| s.touches(p, layer))
-                        .map(|s| s.net),
-                );
+                nets.extend(bucket.iter().filter(|s| s.touches(p, layer)).map(|s| s.net));
             }
         }
         nets

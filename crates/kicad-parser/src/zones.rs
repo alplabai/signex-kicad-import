@@ -62,11 +62,7 @@ pub(crate) fn convert(
         report.note("zone that leaves pads unconnected written with direct pad connections");
     }
     let fill = node.find("fill");
-    if fill
-        .and_then(|f| f.find("mode"))
-        .and_then(SExpr::first_arg)
-        == Some("hatch")
-    {
+    if fill.and_then(|f| f.find("mode")).and_then(SExpr::first_arg) == Some("hatch") {
         report.note("hatched zone written as a solid pour");
     }
     let template = Zone {
@@ -82,11 +78,15 @@ pub(crate) fn convert(
             .and_then(|p| p.arg_f64(0))
             .map_or(0, |p| p.max(0.0) as u32),
         thermal_relief: !matches!(mode, Some("yes" | "no")),
-        thermal_gap: fill.and_then(|f| number_of(f, "thermal_gap")).unwrap_or(0.5),
+        thermal_gap: fill
+            .and_then(|f| number_of(f, "thermal_gap"))
+            .unwrap_or(0.5),
         thermal_width: fill
             .and_then(|f| number_of(f, "thermal_bridge_width"))
             .unwrap_or(0.5),
-        clearance: connect.and_then(|c| number_of(c, "clearance")).unwrap_or(0.0),
+        clearance: connect
+            .and_then(|c| number_of(c, "clearance"))
+            .unwrap_or(0.0),
         min_thickness: number_of(node, "min_thickness").unwrap_or(0.25),
         remove_dead_islands: number_of(node, "island_removal_mode").is_none_or(|m| m != 1.0),
         min_island_area: number_of(node, "island_area_min").unwrap_or(0.0),
@@ -133,9 +133,7 @@ fn shapes_of(node: &SExpr, report: &mut Report) -> Vec<Shape> {
             Some(i) => shapes[i].1.push(ring),
             None => {
                 if !shapes.is_empty() {
-                    report.note(
-                        "zone area apart from its first outline written as its own zone",
-                    );
+                    report.note("zone area apart from its first outline written as its own zone");
                 }
                 shapes.push((ring, Vec::new()));
             }
@@ -250,7 +248,10 @@ mod tests {
         assert_ne!(zones[0].uuid, zones[1].uuid);
         let z = &zones[0];
         assert_eq!((z.kind, z.net, z.priority), (ZoneKind::Pour, 1, 2));
-        assert_eq!((z.clearance, z.thermal_gap, z.thermal_width), (0.3, 0.4, 0.35));
+        assert_eq!(
+            (z.clearance, z.thermal_gap, z.thermal_width),
+            (0.3, 0.4, 0.35)
+        );
         assert!(z.thermal_relief);
         assert_eq!(z.outline.len(), 4);
     }
@@ -294,6 +295,9 @@ mod tests {
         let summary = report.summary();
         assert!(summary.contains("written as its own zone"), "{summary}");
         assert!(summary.contains("leaves pads unconnected"), "{summary}");
-        assert!(summary.contains("hatched zone written as a solid pour"), "{summary}");
+        assert!(
+            summary.contains("hatched zone written as a solid pour"),
+            "{summary}"
+        );
     }
 }

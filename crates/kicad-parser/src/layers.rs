@@ -154,7 +154,9 @@ impl Stack {
                 }),
                 Some(_) => {}
                 None => {
-                    report.note(format!("layer {name} has no Signex layer; its items are dropped"));
+                    report.note(format!(
+                        "layer {name} has no Signex layer; its items are dropped"
+                    ));
                 }
             }
         }
@@ -258,7 +260,13 @@ mod tests {
         let names: Vec<(&str, &str, &str)> = stack
             .layers
             .iter()
-            .map(|l| (l.token.as_str(), l.layer_type.as_str(), l.display_name.as_str()))
+            .map(|l| {
+                (
+                    l.token.as_str(),
+                    l.layer_type.as_str(),
+                    l.display_name.as_str(),
+                )
+            })
             .collect();
         assert_eq!(
             names,

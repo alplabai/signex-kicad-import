@@ -153,3 +153,18 @@ fn a_self_crossing_outline_is_not_simple() {
     let folded = [Point::new(0.0, 0.0), Point::new(2.0, 0.0), Point::new(1.0, 0.0)];
     assert!(!is_simple(&folded));
 }
+
+#[test]
+fn source_tool_bookkeeping_fields_are_dropped() {
+    let (fp, report) = convert_text(
+        r#"(footprint "Lib:R" (layer "F.Cu") (at 0 0)
+  (property "Reference" "R1" (at 0 0 0) (layer "F.SilkS"))
+  (property "Sheetfile" "power.kicad_sch")
+  (property "Sheetname" "Power")
+  (property "ki_fp_filters" "R_*")
+  (property "MPN" "RC0603"))"#,
+    );
+    let keys: Vec<&str> = fp.properties.iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(keys, ["Reference", "MPN"]);
+    assert!(report.summary().contains("3 x source-tool metadata field dropped"));
+}

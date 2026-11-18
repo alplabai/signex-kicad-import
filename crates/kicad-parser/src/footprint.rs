@@ -105,11 +105,14 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
             graphics.push(g);
         }
     }
-    let properties = fp
-        .find_all("property")
-        .into_iter()
-        .map(|p| property(p, frame, cx.stack))
-        .collect();
+    let mut properties = Vec::new();
+    for node in fp.find_all("property") {
+        if is_source_metadata(node.first_arg().unwrap_or("")) {
+            cx.report.note("source-tool metadata field dropped");
+        } else {
+            properties.push(property(node, frame, cx.stack));
+        }
+    }
     Footprint {
         uuid,
         reference: field(fp, "Reference", "reference"),
@@ -123,6 +126,13 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
         graphics,
         properties,
     }
+}
+
+/// A footprint field that records the source tool's own bookkeeping (its
+/// schematic sheet files, its library descriptions, its `ki_` keys), not
+/// the board: dropped, since Signex keeps its own schematic link.
+fn is_source_metadata(key: &str) -> bool {
+    matches!(key, "Sheetfile" | "Sheetname" | "Description") || key.starts_with("ki_")
 }
 
 fn pad_type(token: &str) -> PadType {

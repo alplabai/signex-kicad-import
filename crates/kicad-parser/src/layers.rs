@@ -4,6 +4,8 @@
 
 //! Source layer names to Signex layer tokens, and the board's stackup.
 
+use std::collections::BTreeMap;
+
 use snx_writer::model::StackLayer;
 
 use crate::report::Report;
@@ -58,54 +60,105 @@ pub(crate) fn is_copper(token: &str) -> bool {
         || (token.starts_with("Inner") && token.ends_with("Copper"))
 }
 
+/// The source layer types that are copper.
+const COPPER_KINDS: [&str; 4] = ["signal", "power", "mixed", "jumper"];
+
 /// The board's layers: copper top to bottom, then the other layers in the
 /// order the source lists them.
 pub(crate) struct Stack {
     pub(crate) layers: Vec<StackLayer>,
+    /// The board's own name of each copper layer (a user may rename them,
+    /// and items then name the layer by that name) to its token.
+    aliases: BTreeMap<String, String>,
 }
 
 impl Stack {
     /// From the root `(layers ..)` list: `(<id> "<name>" <type> ["<user name>"])`.
+    ///
+    /// A copper layer is known by its id, not its name, since a user may
+    /// rename it: id 0 is the top; the bottom is id 31 in files that number
+    /// the inner layers 1 to 30 and id 2 in files that number them 4, 6, ..;
+    /// the inner layers follow in id order.
     pub(crate) fn read(root: &SExpr, report: &mut Report) -> Self {
-        let mut inner: Vec<(u8, StackLayer)> = Vec::new();
-        let mut outer: Vec<StackLayer> = Vec::new();
+        let entries: Vec<(u32, &str, &str)> = root
+            .find("layers")
+            .map(SExpr::children)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|e| {
+                let id = e.keyword()?.parse().ok()?;
+                Some((id, e.arg(0)?, e.arg(1).unwrap_or("signal")))
+            })
+            .collect();
+        let is_copper_kind = |kind: &str| COPPER_KINDS.contains(&kind);
+        let bottom_id = if entries
+            .iter()
+            .any(|&(id, _, kind)| id == 31 && is_copper_kind(kind))
+        {
+            31
+        } else {
+            2
+        };
+        let mut inner_ids: Vec<u32> = entries
+            .iter()
+            .filter(|&&(id, _, kind)| is_copper_kind(kind) && id != 0 && id != bottom_id)
+            .map(|&(id, _, _)| id)
+            .collect();
+        inner_ids.sort_unstable();
+
+        let mut aliases = BTreeMap::new();
+        let (mut top, mut bottom) = (None, None);
+        let mut inner: Vec<(usize, StackLayer)> = Vec::new();
         let mut other: Vec<StackLayer> = Vec::new();
-        let entries = root.find("layers").map(SExpr::children).unwrap_or(&[]);
-        for entry in entries {
-            let (Some(name), kind) = (entry.arg(0), entry.arg(1).unwrap_or("signal")) else {
+        for &(id, name, kind) in &entries {
+            if is_copper_kind(kind) {
+                let layer_type = if kind == "power" { "plane" } else { "copper" };
+                let rank = inner_ids.iter().position(|&i| i == id);
+                let token = match (id, rank) {
+                    (0, _) => "TopCopper".to_string(),
+                    (id, _) if id == bottom_id => "BottomCopper".to_string(),
+                    (_, Some(r)) if r < 30 => format!("Inner{}Copper", r + 1),
+                    _ => {
+                        report.note(format!("copper layer {name} past 32 layers dropped"));
+                        continue;
+                    }
+                };
+                aliases.insert(name.to_string(), token.clone());
+                let layer = StackLayer {
+                    token,
+                    layer_type: layer_type.to_string(),
+                };
+                match (id, rank) {
+                    (0, _) => top = Some(layer),
+                    (_, Some(r)) => inner.push((r, layer)),
+                    _ => bottom = Some(layer),
+                }
                 continue;
-            };
-            let Some(token) = token(name) else {
-                report.note(format!("layer {name} has no Signex layer; its items are dropped"));
-                continue;
-            };
-            let copper_type = if kind == "power" { "plane" } else { "copper" };
-            let layer = |layer_type: &str| StackLayer {
-                token: token.clone(),
-                layer_type: layer_type.to_string(),
-            };
-            if token == "TopCopper" || token == "BottomCopper" {
-                outer.push(layer(copper_type));
-            } else if let Some(n) = inner_index(&token) {
-                inner.push((n, layer(copper_type)));
-            } else if !other.iter().any(|l| l.token == token) {
-                other.push(layer(""));
+            }
+            match token(name) {
+                Some(t) if !other.iter().any(|l| l.token == t) => other.push(StackLayer {
+                    token: t,
+                    layer_type: String::new(),
+                }),
+                Some(_) => {}
+                None => {
+                    report.note(format!("layer {name} has no Signex layer; its items are dropped"));
+                }
             }
         }
-        inner.sort_by_key(|(n, _)| *n);
+        inner.sort_by_key(|(r, _)| *r);
         let mut layers = Vec::new();
-        layers.extend(outer.iter().find(|l| l.token == "TopCopper").cloned());
+        layers.push(top.unwrap_or_else(|| copper("TopCopper")));
         layers.extend(inner.into_iter().map(|(_, l)| l));
-        layers.extend(outer.iter().find(|l| l.token == "BottomCopper").cloned());
+        layers.push(bottom.unwrap_or_else(|| copper("BottomCopper")));
         layers.extend(other);
-        if !layers.iter().any(|l| l.token == "TopCopper") {
-            layers.insert(0, copper("TopCopper"));
-        }
-        if !layers.iter().any(|l| l.token == "BottomCopper") {
-            let at = layers.iter().filter(|l| is_copper(&l.token)).count();
-            layers.insert(at, copper("BottomCopper"));
-        }
-        Self { layers }
+        Self { layers, aliases }
+    }
+
+    /// The token for a layer name an item uses: the board's own copper
+    /// names first, then the fixed names.
+    pub(crate) fn token(&self, name: &str) -> Option<String> {
+        self.aliases.get(name).cloned().or_else(|| token(name))
     }
 
     /// Copper tokens, top to bottom.
@@ -149,7 +202,7 @@ impl Stack {
                     push("TopSilkscreen");
                     push("BottomSilkscreen");
                 }
-                other => match token(other) {
+                other => match self.token(other) {
                     Some(t) => push(&t),
                     None => report.note(format!("pad layer {other} dropped")),
                 },
@@ -166,18 +219,30 @@ fn copper(token: &str) -> StackLayer {
     }
 }
 
-fn inner_index(token: &str) -> Option<u8> {
-    token
-        .strip_prefix("Inner")?
-        .strip_suffix("Copper")?
-        .parse()
-        .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sexpr;
+
+    #[test]
+    fn renamed_copper_layers_are_known_by_their_id() {
+        let root = sexpr::parse(
+            r#"(kicad_pcb (layers (0 "Top" signal) (1 "GND" power) (2 "3V3" power)
+               (31 "Bottom" signal) (44 "Edge.Cuts" user)))"#,
+        )
+        .unwrap();
+        let mut report = Report::default();
+        let stack = Stack::read(&root, &mut report);
+        assert!(report.is_empty(), "{}", report.summary());
+        assert_eq!(stack.token("Top").as_deref(), Some("TopCopper"));
+        assert_eq!(stack.token("GND").as_deref(), Some("Inner1Copper"));
+        assert_eq!(stack.token("3V3").as_deref(), Some("Inner2Copper"));
+        assert_eq!(stack.token("Bottom").as_deref(), Some("BottomCopper"));
+        assert_eq!(stack.token("Edge.Cuts").as_deref(), Some("EdgeCuts"));
+        assert_eq!(stack.copper().len(), 4);
+        let pads = stack.pad_layers(&["Top", "F.Mask"], &mut report);
+        assert_eq!(pads, ["TopCopper", "TopSolderMask"]);
+    }
 
     #[test]
     fn names_map_to_signex_tokens() {

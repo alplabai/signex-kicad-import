@@ -24,7 +24,7 @@ use crate::geometry::{
     twice_area,
 };
 use crate::ids::Ids;
-use crate::layers::{Stack, token};
+use crate::layers::Stack;
 use crate::nets::NetTable;
 use crate::report::Report;
 use crate::sexpr::{Atom, SExpr};
@@ -91,7 +91,7 @@ fn field(fp: &SExpr, property: &str, text_kind: &str) -> String {
 pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
     let (position, angle) = at_of(fp);
     let side = fp.find("layer").and_then(SExpr::first_arg).unwrap_or("F.Cu");
-    let bottom = side == "B.Cu";
+    let bottom = cx.stack.token(side).as_deref() == Some("BottomCopper");
     let frame = Frame { angle, bottom };
     let uuid = cx.ids.of(fp, cx.report);
     let pads = fp
@@ -101,14 +101,14 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
         .collect();
     let mut graphics: Vec<FootprintGraphic> = Vec::new();
     for child in fp.children() {
-        if let Some(g) = graphic(child, frame, cx.report) {
+        if let Some(g) = graphic(child, frame, cx.stack, cx.report) {
             graphics.push(g);
         }
     }
     let properties = fp
         .find_all("property")
         .into_iter()
-        .map(|p| property(p, frame))
+        .map(|p| property(p, frame, cx.stack))
         .collect();
     Footprint {
         uuid,
@@ -361,14 +361,17 @@ fn is_hidden(node: &SExpr) -> bool {
     has_flag(node, "hide") || node.find("effects").is_some_and(|e| has_flag(e, "hide"))
 }
 
-fn property(node: &SExpr, frame: Frame) -> Property {
+fn property(node: &SExpr, frame: Frame, stack: &Stack) -> Property {
     let (at, angle) = at_of(node);
     Property {
         key: node.first_arg().unwrap_or("").to_string(),
         value: node.arg(1).unwrap_or("").to_string(),
         position: node.find("at").map(|_| frame.local(at)),
         rotation: frame.text_turn(angle),
-        layer: node.find("layer").and_then(SExpr::first_arg).and_then(token),
+        layer: node
+            .find("layer")
+            .and_then(SExpr::first_arg)
+            .and_then(|name| stack.token(name)),
         font_size: font_size(node),
         hidden: is_hidden(node),
     }
@@ -376,7 +379,12 @@ fn property(node: &SExpr, frame: Frame) -> Property {
 
 /// One footprint drawing; `None` for a child that is not one, or one on a
 /// layer Signex does not have.
-fn graphic(node: &SExpr, frame: Frame, report: &mut Report) -> Option<FootprintGraphic> {
+fn graphic(
+    node: &SExpr,
+    frame: Frame,
+    stack: &Stack,
+    report: &mut Report,
+) -> Option<FootprintGraphic> {
     let kind = node.keyword()?;
     let graphic_type = match kind {
         "fp_line" => "line",
@@ -388,7 +396,7 @@ fn graphic(node: &SExpr, frame: Frame, report: &mut Report) -> Option<FootprintG
         _ => return None,
     };
     let layer_name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
-    let Some(layer) = token(layer_name) else {
+    let Some(layer) = stack.token(layer_name) else {
         report.note(format!("footprint drawing on layer {layer_name} dropped"));
         return None;
     };

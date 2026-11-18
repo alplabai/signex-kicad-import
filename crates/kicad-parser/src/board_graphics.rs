@@ -12,7 +12,7 @@ use crate::geometry::{
     point_of, stroke_width,
 };
 use crate::ids::Ids;
-use crate::layers::{is_copper, token};
+use crate::layers::{Stack, is_copper};
 use crate::nets::NetTable;
 use crate::outline::EdgePiece;
 use crate::report::Report;
@@ -38,6 +38,7 @@ pub(crate) struct Drawings {
 
 pub(crate) fn read(
     root: &SExpr,
+    stack: &Stack,
     nets: &mut NetTable,
     ids: &mut Ids,
     report: &mut Report,
@@ -46,10 +47,10 @@ pub(crate) fn read(
     for node in root.children() {
         match node.keyword() {
             Some("gr_line" | "gr_rect" | "gr_circle" | "gr_arc" | "gr_poly") => {
-                drawing(node, nets, ids, report, &mut out);
+                drawing(node, stack, nets, ids, report, &mut out);
             }
             Some("gr_text") => {
-                if let Some(text) = text(node, ids, report) {
+                if let Some(text) = text(node, stack, ids, report) {
                     out.texts.push(text);
                 }
             }
@@ -64,13 +65,14 @@ pub(crate) fn read(
 
 fn drawing(
     node: &SExpr,
+    stack: &Stack,
     nets: &mut NetTable,
     ids: &mut Ids,
     report: &mut Report,
     out: &mut Drawings,
 ) {
     let layer_name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
-    let Some(layer) = token(layer_name) else {
+    let Some(layer) = stack.token(layer_name) else {
         report.note(format!("board drawing on layer {layer_name} dropped"));
         return;
     };
@@ -229,9 +231,9 @@ fn edge_piece(node: &SExpr, g: &BoardGraphic) -> Option<EdgePiece> {
     })
 }
 
-fn text(node: &SExpr, ids: &mut Ids, report: &mut Report) -> Option<BoardText> {
+fn text(node: &SExpr, stack: &Stack, ids: &mut Ids, report: &mut Report) -> Option<BoardText> {
     let layer_name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
-    let Some(layer) = token(layer_name) else {
+    let Some(layer) = stack.token(layer_name) else {
         report.note(format!("board text on layer {layer_name} dropped"));
         return None;
     };
@@ -261,7 +263,8 @@ mod tests {
         let mut nets = NetTable::read(&root);
         let mut ids = Ids::seeded(text);
         let mut report = Report::default();
-        let drawings = read(&root, &mut nets, &mut ids, &mut report);
+        let stack = Stack::read(&root, &mut report);
+        let drawings = read(&root, &stack, &mut nets, &mut ids, &mut report);
         (drawings, report)
     }
 

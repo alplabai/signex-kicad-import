@@ -11,7 +11,7 @@ use crate::error::ParseError;
 use crate::footprint::{self, Context};
 use crate::geometry::{at_of, number_of, point_of};
 use crate::ids::Ids;
-use crate::layers::{Stack, is_copper, token};
+use crate::layers::{Stack, is_copper};
 use crate::nets::NetTable;
 use crate::outline::{self, EdgePiece};
 use crate::project::ProjectRules;
@@ -52,15 +52,15 @@ pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted
             .map(|n| footprint::convert(n, &mut cx))
             .collect()
     };
-    let tracks = tracks(&root, &mut nets, &mut ids, &mut report);
-    let arcs = arcs(&root, &mut nets, &mut ids, &mut report);
+    let tracks = tracks(&root, &stack, &mut nets, &mut ids, &mut report);
+    let arcs = arcs(&root, &stack, &mut nets, &mut ids, &mut report);
     let vias = vias(&root, &stack, &mut nets, &mut ids, &mut report);
     let mut zones: Vec<_> = root
         .find_all("zone")
         .into_iter()
         .flat_map(|z| zones::convert(z, &stack, &mut nets, &mut ids, &mut report))
         .collect();
-    let drawings = board_graphics::read(&root, &mut nets, &mut ids, &mut report);
+    let drawings = board_graphics::read(&root, &stack, &mut nets, &mut ids, &mut report);
     zones.extend(drawings.solids);
     let (ring, edge_graphics) = edge(&drawings.edge_pieces, drawings.edge_graphics, &mut report);
     let mut graphics = drawings.graphics;
@@ -116,9 +116,14 @@ fn edge(
 }
 
 /// The copper layer an item names, or `None` (reported) when it is not one.
-fn copper_layer(node: &SExpr, what: &str, report: &mut Report) -> Option<String> {
+fn copper_layer(
+    node: &SExpr,
+    stack: &Stack,
+    what: &str,
+    report: &mut Report,
+) -> Option<String> {
     let name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
-    match token(name) {
+    match stack.token(name) {
         Some(t) if is_copper(&t) => Some(t),
         _ => {
             report.note(format!("{what} on non-copper layer {name} dropped"));
@@ -127,14 +132,20 @@ fn copper_layer(node: &SExpr, what: &str, report: &mut Report) -> Option<String>
     }
 }
 
-fn tracks(root: &SExpr, nets: &mut NetTable, ids: &mut Ids, report: &mut Report) -> Vec<Track> {
+fn tracks(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<Track> {
     let mut out = Vec::new();
     for node in root.find_all("segment") {
         let (Some(start), Some(end)) = (point_of(node, "start"), point_of(node, "end")) else {
             report.note("track without its ends dropped");
             continue;
         };
-        let Some(layer) = copper_layer(node, "track", report) else {
+        let Some(layer) = copper_layer(node, stack, "track", report) else {
             continue;
         };
         out.push(Track {
@@ -149,7 +160,13 @@ fn tracks(root: &SExpr, nets: &mut NetTable, ids: &mut Ids, report: &mut Report)
     out
 }
 
-fn arcs(root: &SExpr, nets: &mut NetTable, ids: &mut Ids, report: &mut Report) -> Vec<TrackArc> {
+fn arcs(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<TrackArc> {
     let mut out = Vec::new();
     for node in root.find_all("arc") {
         let (Some(start), Some(mid), Some(end)) = (
@@ -160,7 +177,7 @@ fn arcs(root: &SExpr, nets: &mut NetTable, ids: &mut Ids, report: &mut Report) -
             report.note("copper arc without its three points dropped");
             continue;
         };
-        let Some(layer) = copper_layer(node, "copper arc", report) else {
+        let Some(layer) = copper_layer(node, stack, "copper arc", report) else {
             continue;
         };
         out.push(TrackArc {
@@ -208,7 +225,7 @@ fn vias(
                 l.children()
                     .iter()
                     .filter_map(|c| match c {
-                        SExpr::Atom(a) => token(a.as_str()).filter(|t| is_copper(t)),
+                        SExpr::Atom(a) => stack.token(a.as_str()).filter(|t| is_copper(t)),
                         SExpr::List(_) => None,
                     })
                     .collect()

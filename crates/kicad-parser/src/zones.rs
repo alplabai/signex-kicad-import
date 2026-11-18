@@ -10,7 +10,7 @@ use snx_writer::model::{Point, Zone, ZoneKind};
 
 use crate::geometry::{arc_polyline, number_of, point_args, point_of};
 use crate::ids::Ids;
-use crate::layers::{Stack, is_copper, token};
+use crate::layers::{Stack, is_copper};
 use crate::nets::NetTable;
 use crate::report::Report;
 use crate::sexpr::{Atom, SExpr};
@@ -115,7 +115,7 @@ fn zone_layers(node: &SExpr, stack: &Stack, report: &mut Report) -> Vec<String> 
         let dropped: Vec<&str> = names
             .iter()
             .copied()
-            .filter(|n| token(n).is_none_or(|t| !is_copper(&t)))
+            .filter(|n| stack.token(n).is_none_or(|t| !is_copper(&t)))
             .collect();
         if !dropped.is_empty() {
             report.note("zone on a non-copper layer dropped from that layer");

@@ -1,0 +1,13 @@
+[package]
+name = "snx-writer"
+description = "Writer for the current Signex .snxpcb and .snxprj formats, written from the public format description"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uuid = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

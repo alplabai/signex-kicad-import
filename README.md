@@ -36,16 +36,29 @@ Schematic and symbol conversion is not part of this release.
   `BottomCopper`, `TopSilkscreen`, `EdgeCuts`, ...), the copper stack
   top to bottom with plane layers marked, and the board's own copper
   layer names kept as display names.
-- Footprints with their pads (circle, rect, oval, roundrect, custom and
-  trapezoid pads as custom outlines), drills, nets, drawings and fields.
-  The designator and value texts become the Reference and Value fields.
-  A bottom-side footprint is written library side up (the source's flip
-  negates local y and turns the part a half turn); Signex mirrors it back.
-- Tracks, copper arcs, through, blind and micro vias.
+- The physical stackup (copper, dielectric, mask, paste and silkscreen
+  rows with thickness, material, permittivity and copper weight) as the
+  board's stackup rows.
+- Footprints with their pads (circle, rect, oval, roundrect, trapezoid,
+  and custom pads with the anchor shape and every filled primitive merged
+  into one outline), drills, nets, drawings and fields. The designator
+  and value texts become the Reference and Value fields. A bottom-side
+  footprint is written library side up (the source's flip negates local
+  y and turns the part a half turn); Signex mirrors it back.
+- Tracks, copper arcs, through, blind and micro vias. Unfilled copper
+  drawings become tracks and copper arcs along their stroke.
 - Zones as polygon pours with their cut-outs as holes, rule areas as
   keepouts, filled copper polygons as solid copper; one zone per copper
-  layer. A hatched zone and a zone that leaves pads unconnected are
-  reported.
+  layer. Zones inside footprints become board zones. A hatched zone and
+  a zone that leaves pads unconnected are reported.
+- Arcs inside polygons (zones, custom pads, board and footprint polygons,
+  the board edge) become short chords.
+
+Anything the conversion cannot carry (3D models, text boxes, curves,
+dimensions, targets, tables, hidden footprint texts, an item whose
+position or size does not read) is dropped and reported by kind and
+count, never dropped silently. When a file cannot be written, the
+temporary files are removed and no board is written.
 - The board outline: the largest closed edge ring. Other edge drawings
   (cut-outs) stay drawings on the edge layer.
 - The board origin (the drill and place origin, else the grid origin).

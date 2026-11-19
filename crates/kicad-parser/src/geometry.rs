@@ -19,15 +19,51 @@ pub(crate) fn point_of(node: &SExpr, key: &str) -> Option<Point> {
     node.find(key).and_then(point_args)
 }
 
-/// `(at x y [angle])` of `node`: position and angle, zero when absent.
-pub(crate) fn at_of(node: &SExpr) -> (Point, f64) {
-    match node.find("at") {
-        Some(at) => (
-            Point::new(at.arg_f64(0).unwrap_or(0.0), at.arg_f64(1).unwrap_or(0.0)),
-            at.arg_f64(2).unwrap_or(0.0),
-        ),
-        None => (Point::default(), 0.0),
+/// `(at x y [angle] [unlocked])` of `node`: position and angle (0 when the
+/// angle is left out). `None` when there is no `at`, or when a coordinate
+/// or the angle does not read as a finite number; the caller reports and
+/// drops the item rather than placing it at 0.
+pub(crate) fn at_of(node: &SExpr) -> Option<(Point, f64)> {
+    let at = node.find("at")?;
+    let position = point_args(at)?;
+    let angle = match at.arg(2) {
+        None | Some("unlocked") => 0.0,
+        Some(_) => at.arg_f64(2)?,
+    };
+    Some((position, angle))
+}
+
+/// The points of a `(pts ..)` list as a closed ring: `(xy ..)` corners, and
+/// each `(arc (start ..) (mid ..) (end ..))` as chords of at most
+/// `step_deg`. Repeated corners and a closing corner equal to the first are
+/// left out. `unread` counts the entries that did not read.
+pub(crate) fn ring_points(pts: &SExpr, step_deg: f64, unread: &mut usize) -> Vec<Point> {
+    let mut out: Vec<Point> = Vec::new();
+    for item in pts.children() {
+        match item.keyword() {
+            Some("xy") => match point_args(item) {
+                Some(p) => out.push(p),
+                None => *unread += 1,
+            },
+            Some("arc") => {
+                let (Some(s), Some(m), Some(e)) = (
+                    point_of(item, "start"),
+                    point_of(item, "mid"),
+                    point_of(item, "end"),
+                ) else {
+                    *unread += 1;
+                    continue;
+                };
+                out.extend(arc_polyline(s, m, e, step_deg));
+            }
+            _ => {}
+        }
     }
+    out.dedup();
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
+    out
 }
 
 /// A number under the child `key` of `node` (`(width 0.2)`).
@@ -163,6 +199,39 @@ mod tests {
         );
         assert!(line.len() > 3);
         assert!(line[1..line.len() - 1].iter().all(|p| p.y < 0.0));
+    }
+
+    #[test]
+    fn a_position_that_does_not_read_is_none_not_zero() {
+        let read = |text: &str| at_of(&crate::sexpr::parse(text).expect("parses"));
+        assert_eq!(
+            read("(pad (at 1 2 90))"),
+            Some((Point::new(1.0, 2.0), 90.0))
+        );
+        assert_eq!(read("(pad (at 1 2))"), Some((Point::new(1.0, 2.0), 0.0)));
+        assert_eq!(
+            read("(fp_text (at 1 2 unlocked))"),
+            Some((Point::new(1.0, 2.0), 0.0))
+        );
+        assert_eq!(read("(pad (at 1))"), None);
+        assert_eq!(read("(pad (at x 2))"), None);
+        assert_eq!(read("(pad (at 1 inf))"), None);
+        assert_eq!(read("(pad (at 1 2 nan))"), None);
+        assert_eq!(read("(pad (size 1 2))"), None);
+    }
+
+    #[test]
+    fn a_ring_takes_its_arcs_as_chords() {
+        let pts = crate::sexpr::parse(
+            "(pts (xy -1 0) (arc (start -1 0) (mid 0 -1) (end 1 0)) (xy 1 2) (xy bad 0))",
+        )
+        .expect("parses");
+        let mut unread = 0;
+        let ring = ring_points(&pts, 10.0, &mut unread);
+        assert_eq!(unread, 1);
+        assert!(ring.len() > 5, "{ring:?}");
+        assert!(ring.iter().any(|p| p.y < -0.9));
+        assert_eq!(ring.last(), Some(&Point::new(1.0, 2.0)));
     }
 
     #[test]

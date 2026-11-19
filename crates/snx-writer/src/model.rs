@@ -31,6 +31,25 @@ pub struct StackLayer {
     pub display_name: String,
 }
 
+/// One row of the board's physical stack (`[[stackup.rows]]`), top to
+/// bottom.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PhysicalLayer {
+    /// `signal`, `plane`, `dielectric`, `solder_mask`, `paste` or
+    /// `overlay`.
+    pub kind: String,
+    /// The name the board gives the row; empty for none.
+    pub name: String,
+    /// The board layer token of a copper row; empty for any other row.
+    pub layer: String,
+    pub material: String,
+    pub thickness_mm: f64,
+    /// Relative permittivity; 0 where it does not apply or is not known.
+    pub dielectric_constant: f64,
+    /// Copper weight, oz/ft²; 0 for a row that is not copper.
+    pub copper_weight_oz: f64,
+}
+
 /// Board-wide defaults (`[stackup.setup]`), millimetres.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Setup {
@@ -92,6 +111,10 @@ pub enum PadShape {
     Oval,
     /// Corner radius as a fraction of the shorter side, `0.0..=0.5`.
     RoundRect(f64),
+    /// The trapezoid delta in the pad's own frame: `x` lengthens the +y
+    /// edge by `x / 2` and shortens the -y edge as much, `y` does the same
+    /// for the +x and -x edges. One of the two is 0.
+    Trapezoid(Point),
     Custom(Vec<Point>),
 }
 
@@ -102,6 +125,7 @@ impl PadShape {
             Self::Rect => "rect",
             Self::Oval => "oval",
             Self::RoundRect(_) => "roundrect",
+            Self::Trapezoid(_) => "trapezoid",
             Self::Custom(_) => "custom",
         }
     }
@@ -299,6 +323,8 @@ pub struct Board {
     /// Board thickness, mm.
     pub thickness: f64,
     pub layers: Vec<StackLayer>,
+    /// The physical stack; empty writes none, and Signex derives one.
+    pub physical_stack: Vec<PhysicalLayer>,
     pub setup: Setup,
     pub nets: Vec<Net>,
     pub footprints: Vec<Footprint>,

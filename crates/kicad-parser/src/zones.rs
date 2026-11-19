@@ -8,7 +8,7 @@
 
 use snx_writer::model::{Point, Zone, ZoneKind};
 
-use crate::geometry::{arc_polyline, number_of, point_args, point_of, twice_area};
+use crate::geometry::{number_of, ring_points, twice_area};
 use crate::ids::Ids;
 use crate::layers::{Stack, is_copper};
 use crate::nets::NetTable;
@@ -119,7 +119,7 @@ fn shapes_of(node: &SExpr, report: &mut Report) -> Vec<Shape> {
     let mut rings: Vec<Vec<Point>> = node
         .find_all("polygon")
         .into_iter()
-        .map(ring_of)
+        .map(|polygon| ring_of(polygon, report))
         .filter(|r| r.len() >= 3)
         .collect();
     // Largest first, so a cut-out always comes after the ring holding it.
@@ -186,33 +186,18 @@ fn zone_layers(node: &SExpr, stack: &Stack, report: &mut Report) -> Vec<String> 
     layers
 }
 
-/// One `(polygon (pts ..))` as a ring, arcs in it as chords.
-fn ring_of(polygon: &SExpr) -> Vec<Point> {
+/// One `(polygon (pts ..))` as a ring, arcs in it as chords; a corner that
+/// does not read is reported and left out.
+fn ring_of(polygon: &SExpr, report: &mut Report) -> Vec<Point> {
     let Some(pts) = polygon.find("pts") else {
         return Vec::new();
     };
-    let mut out: Vec<Point> = Vec::new();
-    for item in pts.children() {
-        match item.keyword() {
-            Some("xy") => out.extend(point_args(item)),
-            Some("arc") => {
-                let (Some(s), Some(m), Some(e)) = (
-                    point_of(item, "start"),
-                    point_of(item, "mid"),
-                    point_of(item, "end"),
-                ) else {
-                    continue;
-                };
-                out.extend(arc_polyline(s, m, e, ARC_STEP_DEG));
-            }
-            _ => {}
-        }
+    let mut unread = 0;
+    let ring = ring_points(pts, ARC_STEP_DEG, &mut unread);
+    for _ in 0..unread {
+        report.note("zone corner that does not read dropped");
     }
-    out.dedup();
-    if out.len() > 1 && out.first() == out.last() {
-        out.pop();
-    }
-    out
+    ring
 }
 
 #[cfg(test)]

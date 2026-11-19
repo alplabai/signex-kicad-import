@@ -15,5 +15,5 @@ mod pcb;
 mod project;
 mod text;
 
-pub use pcb::{FORMAT_TOKEN, GENERATOR, write_board};
+pub use pcb::{FORMAT_TOKEN, GENERATOR, Written, write_board};
 pub use project::write_project;

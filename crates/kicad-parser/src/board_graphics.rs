@@ -3,13 +3,14 @@
 // Copyright (C) 2026 alplab and contributors. See LICENSE.
 
 //! Board-level drawings and texts. Edge-cut drawings also become pieces of
-//! the board edge; a filled copper polygon becomes solid copper.
+//! the board edge; a filled copper shape becomes solid copper, an unfilled
+//! one tracks and copper arcs along its stroke.
 
-use snx_writer::model::{BoardGraphic, BoardText, Point, Zone, ZoneKind};
+use snx_writer::model::{BoardGraphic, BoardText, Point, Track, TrackArc, Zone, ZoneKind};
 
 use crate::geometry::{
-    arc_polyline, at_of, circle_polygon, circumcenter, normalize_deg, number_of, point_args,
-    point_of, stroke_width,
+    arc_polyline, at_of, circle_polygon, circumcenter, normalize_deg, number_of, point_of,
+    ring_points, stroke_width,
 };
 use crate::ids::Ids;
 use crate::layers::{Stack, is_copper};
@@ -33,8 +34,37 @@ pub(crate) struct Drawings {
     pub(crate) edge_pieces: Vec<EdgePiece>,
     /// Filled copper polygons.
     pub(crate) solids: Vec<Zone>,
+    /// The strokes of unfilled copper drawings.
+    pub(crate) tracks: Vec<Track>,
+    pub(crate) arcs: Vec<TrackArc>,
     pub(crate) texts: Vec<BoardText>,
 }
+
+/// Root items that are not drawings and are read elsewhere, or carry
+/// nothing for the board (a group only lists its members).
+const READ_ELSEWHERE: [&str; 21] = [
+    "version",
+    "generator",
+    "generator_version",
+    "host",
+    "general",
+    "paper",
+    "page",
+    "title_block",
+    "layers",
+    "setup",
+    "property",
+    "net",
+    "net_class",
+    "footprint",
+    "module",
+    "segment",
+    "arc",
+    "via",
+    "zone",
+    "group",
+    "embedded_fonts",
+];
 
 pub(crate) fn read(
     root: &SExpr,
@@ -54,7 +84,9 @@ pub(crate) fn read(
                     out.texts.push(text);
                 }
             }
-            Some(kind @ ("gr_text_box" | "gr_curve" | "gr_bbox" | "image" | "dimension")) => {
+            Some(kind) if !READ_ELSEWHERE.contains(&kind) => {
+                // gr_text_box, gr_curve, gr_bbox, image, dimension, target,
+                // table, generated and anything newer.
                 report.note(format!("board {kind} dropped"));
             }
             _ => {}
@@ -76,14 +108,14 @@ fn drawing(
         report.note(format!("board drawing on layer {layer_name} dropped"));
         return;
     };
-    let Some(graphic) = shape(node, layer.clone(), ids) else {
+    let Some(graphic) = shape(node, layer.clone(), ids, report) else {
         report.note("board drawing without its points dropped");
         return;
     };
     if is_copper(&layer) {
         match solid(node, &graphic, nets) {
             Some(zone) => out.solids.push(zone),
-            None => report.note("unfilled copper drawing dropped"),
+            None => strokes(node, &graphic, nets, ids, report, out),
         }
         return;
     }
@@ -100,7 +132,7 @@ fn drawing(
 /// The drawing in the model's terms; an arc runs from `start` to `end` the
 /// way of increasing angle, so it is swapped when the source runs it the
 /// other way.
-fn shape(node: &SExpr, layer: String, ids: &mut Ids) -> Option<BoardGraphic> {
+fn shape(node: &SExpr, layer: String, ids: &mut Ids, report: &mut Report) -> Option<BoardGraphic> {
     let kind = node.keyword()?;
     let mut g = BoardGraphic {
         uuid: ids.fresh(),
@@ -145,7 +177,7 @@ fn shape(node: &SExpr, layer: String, ids: &mut Ids) -> Option<BoardGraphic> {
         }
         _ => {
             g.graphic_type = "poly".to_string();
-            g.points = poly_points(node);
+            g.points = poly_points(node, report);
             if g.points.len() < 2 {
                 return None;
             }
@@ -163,15 +195,18 @@ fn sweeps_up(center: Point, start: Point, mid: Point, end: Point) -> bool {
     (angle(mid) - angle(start)).rem_euclid(tau) <= forward
 }
 
-fn poly_points(node: &SExpr) -> Vec<Point> {
-    node.find("pts")
-        .map(|pts| {
-            pts.find_all("xy")
-                .into_iter()
-                .filter_map(point_args)
-                .collect()
-        })
-        .unwrap_or_default()
+/// A polygon's corners, arcs in it as chords (as fine as an edge arc, since
+/// an edge polygon becomes part of the outline ring).
+fn poly_points(node: &SExpr, report: &mut Report) -> Vec<Point> {
+    let mut unread = 0;
+    let points = node
+        .find("pts")
+        .map(|pts| ring_points(pts, EDGE_ARC_STEP_DEG, &mut unread))
+        .unwrap_or_default();
+    for _ in 0..unread {
+        report.note("board polygon corner that does not read dropped");
+    }
+    points
 }
 
 fn is_filled(node: &SExpr) -> bool {
@@ -181,7 +216,8 @@ fn is_filled(node: &SExpr) -> bool {
     )
 }
 
-/// A filled copper polygon or rectangle as solid copper; `None` otherwise.
+/// A filled copper polygon, rectangle or circle as solid copper; `None`
+/// otherwise.
 fn solid(node: &SExpr, g: &BoardGraphic, nets: &mut NetTable) -> Option<Zone> {
     if !is_filled(node) {
         return None;
@@ -192,6 +228,7 @@ fn solid(node: &SExpr, g: &BoardGraphic, nets: &mut NetTable) -> Option<Zone> {
             let (s, e) = (g.start?, g.end?);
             vec![s, Point::new(e.x, s.y), e, Point::new(s.x, e.y)]
         }
+        "circle" if g.radius > 0.0 => circle_polygon(g.center?, g.radius, EDGE_CIRCLE_CORNERS),
         _ => return None,
     };
     Some(Zone {
@@ -211,6 +248,88 @@ fn solid(node: &SExpr, g: &BoardGraphic, nets: &mut NetTable) -> Option<Zone> {
         remove_dead_islands: false,
         min_island_area: 0.0,
     })
+}
+
+/// The stroke of an unfilled copper drawing as tracks (lines, rectangle
+/// and polygon sides) and copper arcs (an arc; a circle as two halves), on
+/// the drawing's layer and net. A stroke without a width is reported and
+/// dropped.
+fn strokes(
+    node: &SExpr,
+    g: &BoardGraphic,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+    out: &mut Drawings,
+) {
+    if g.width <= 0.0 {
+        report.note("copper drawing without a positive width dropped");
+        return;
+    }
+    let net = nets.of(node);
+    let mut segments: Vec<(Point, Point)> = Vec::new();
+    let mut arcs: Vec<[Point; 3]> = Vec::new();
+    match g.graphic_type.as_str() {
+        "line" => segments.extend(g.start.zip(g.end)),
+        "rect" => {
+            if let (Some(s), Some(e)) = (g.start, g.end) {
+                let corners = [s, Point::new(e.x, s.y), e, Point::new(s.x, e.y)];
+                segments.extend((0..4).map(|i| (corners[i], corners[(i + 1) % 4])));
+            }
+        }
+        "poly" => {
+            let n = g.points.len();
+            segments.extend((0..n).map(|i| (g.points[i], g.points[(i + 1) % n])));
+        }
+        "arc" => {
+            // From the source points: the model's arc may have its ends
+            // swapped.
+            if let (Some(s), Some(m), Some(e)) = (
+                point_of(node, "start"),
+                point_of(node, "mid"),
+                point_of(node, "end"),
+            ) {
+                arcs.push([s, m, e]);
+            }
+        }
+        "circle" => {
+            if let Some(c) = g.center.filter(|_| g.radius > 0.0) {
+                let r = g.radius;
+                let (east, west) = (Point::new(c.x + r, c.y), Point::new(c.x - r, c.y));
+                arcs.push([east, Point::new(c.x, c.y + r), west]);
+                arcs.push([west, Point::new(c.x, c.y - r), east]);
+            }
+        }
+        _ => {}
+    }
+    if segments.is_empty() && arcs.is_empty() {
+        report.note("copper drawing without its points dropped");
+        return;
+    }
+    report.note("unfilled copper drawing written as tracks");
+    let mut first = Some(g.uuid);
+    let mut uuid = |ids: &mut Ids| first.take().unwrap_or_else(|| ids.fresh());
+    for (start, end) in segments.into_iter().filter(|(s, e)| s != e) {
+        out.tracks.push(Track {
+            uuid: uuid(ids),
+            net,
+            layer: g.layer.clone(),
+            width: g.width,
+            start,
+            end,
+        });
+    }
+    for [start, mid, end] in arcs {
+        out.arcs.push(TrackArc {
+            uuid: uuid(ids),
+            net,
+            layer: g.layer.clone(),
+            width: g.width,
+            start,
+            mid,
+            end,
+        });
+    }
 }
 
 /// The edge drawing as a polyline for the outline ring.
@@ -247,7 +366,10 @@ fn text(node: &SExpr, stack: &Stack, ids: &mut Ids, report: &mut Report) -> Opti
         report.note(format!("board text on layer {layer_name} dropped"));
         return None;
     };
-    let (position, angle) = at_of(node);
+    let Some((position, angle)) = at_of(node) else {
+        report.note("board text without a readable position dropped");
+        return None;
+    };
     let font_size = node
         .find("effects")
         .and_then(|e| e.find("font"))
@@ -310,5 +432,65 @@ mod tests {
         // so the ends swap.
         assert_eq!(arc.start, Some(Point::new(-1.0, 0.0)));
         assert_eq!(arc.end, Some(Point::new(1.0, 0.0)));
+    }
+
+    #[test]
+    fn unfilled_copper_drawings_become_tracks_and_arcs() {
+        let (d, report) = read_text(
+            r#"(kicad_pcb (net 1 "GND")
+                 (gr_line (start 0 0) (end 5 0) (stroke (width 0.3)) (layer "F.Cu") (net 1))
+                 (gr_arc (start 0 0) (mid 1 -1) (end 2 0) (stroke (width 0.2)) (layer "B.Cu"))
+                 (gr_rect (start 0 0) (end 2 1) (stroke (width 0.2)) (fill none) (layer "F.Cu"))
+                 (gr_circle (center 0 0) (end 1 0) (stroke (width 0.2)) (layer "B.Cu"))
+                 (gr_line (start 0 0) (end 1 0) (stroke (width 0)) (layer "F.Cu")))"#,
+        );
+        assert_eq!(d.tracks.len(), 5);
+        assert_eq!(d.tracks[0].layer, "TopCopper");
+        assert_eq!((d.tracks[0].net, d.tracks[0].width), (1, 0.3));
+        assert_eq!(d.arcs.len(), 3);
+        let arc = &d.arcs[0];
+        assert_eq!(arc.layer, "BottomCopper");
+        assert_eq!(
+            (arc.start, arc.mid, arc.end),
+            (
+                Point::new(0.0, 0.0),
+                Point::new(1.0, -1.0),
+                Point::new(2.0, 0.0)
+            )
+        );
+        assert!(d.graphics.is_empty() && d.solids.is_empty());
+        let summary = report.summary();
+        assert!(
+            summary.contains("copper drawing without a positive width dropped"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn polygon_arcs_become_chords_and_the_edge_closes_through_them() {
+        let (d, _) = read_text(
+            r#"(kicad_pcb (gr_poly (pts (xy 0 0) (xy 10 0)
+                   (arc (start 10 0) (mid 15 5) (end 10 10)) (xy 0 10))
+                 (layer "Edge.Cuts")))"#,
+        );
+        let ring = &d.edge_pieces[0].points;
+        assert!(ring.len() > 10, "{ring:?}");
+        assert!(ring.iter().any(|p| p.x > 14.9), "{ring:?}");
+    }
+
+    #[test]
+    fn root_items_with_no_signex_form_are_reported() {
+        let (_, report) = read_text(
+            r#"(kicad_pcb (version 20240108) (generator "pcbnew") (group "" (members "x"))
+                 (target plus (at 1 1) (size 5) (layer "Edge.Cuts"))
+                 (table (column_count 2))
+                 (dimension (type aligned) (layer "F.SilkS")))"#,
+        );
+        let summary = report.summary();
+        assert!(summary.contains("board target dropped"), "{summary}");
+        assert!(summary.contains("board table dropped"), "{summary}");
+        assert!(summary.contains("board dimension dropped"), "{summary}");
+        assert!(!summary.contains("group"), "{summary}");
+        assert!(!summary.contains("version"), "{summary}");
     }
 }

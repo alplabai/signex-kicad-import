@@ -155,7 +155,7 @@ fn run(cli: &Cli) -> Result<Outcome> {
     };
 
     // Convert and check every board before writing any, so a refused one
-    // leaves no partial output behind.
+    // leaves no output behind (see `write_all` for a failed write).
     let mut outcome = Outcome::default();
     let mut pending = Vec::new();
     for board_path in &boards {
@@ -189,16 +189,22 @@ fn run(cli: &Cli) -> Result<Outcome> {
         outcome.ends.own_net += tally.own_net;
         outcome.ends.other_net += tally.other_net;
         outcome.report.merge(&converted.report);
+        let written = snx_writer::write_board(&converted.board);
+        for _ in 0..written.non_finite {
+            outcome
+                .report
+                .note("number that is not finite written as 0");
+        }
         pending.push(Pending {
-            pcb: (pcb_path, snx_writer::write_board(&converted.board)),
+            pcb: (pcb_path, written.text),
             project: (
                 prj_path,
                 snx_writer::write_project(&stem, &pcb_name, &converted.classes),
             ),
         });
     }
+    write_all(&pending)?;
     for board in pending {
-        write_pair(&board)?;
         outcome.files.push(board.pcb.0);
         outcome.files.push(board.project.0);
     }
@@ -246,27 +252,57 @@ fn temp_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Write a board's two files so that a `.snxpcb` never stands without its
-/// `.snxprj`: both go to temporary files first, the project file takes its
-/// place before the board does, and a failure removes the temporary files.
-fn write_pair(board: &Pending) -> Result<()> {
-    let result = write_pair_steps(board);
-    if result.is_err() {
-        for (path, _) in [&board.pcb, &board.project] {
+/// Write every board's two files in two steps.
+///
+/// First every file goes to its temporary file, flushed to disk; a failure
+/// there (a full disk, a folder that refuses writes) removes the temporary
+/// files and writes nothing under the real names. Then each board's files
+/// take their places, the project file before the board so a `.snxpcb`
+/// never stands without its `.snxprj`, and the folder is flushed so the
+/// renames survive a power cut. A rename can still fail after earlier
+/// boards took their places; the error then names the file, and the boards
+/// before it stay written.
+fn write_all(boards: &[Pending]) -> Result<()> {
+    let files = || boards.iter().flat_map(|b| [&b.pcb, &b.project]);
+    let remove_temps = || {
+        for (path, _) in files() {
             // Best effort: a temporary file that was never made is fine.
             let _ = std::fs::remove_file(temp_path(path));
         }
+    };
+    for (path, text) in files() {
+        if let Err(e) = write_temp(path, text) {
+            remove_temps();
+            return Err(e.context("nothing was written"));
+        }
     }
-    result
+    for board in boards {
+        for (path, _) in [&board.project, &board.pcb] {
+            if let Err(e) = std::fs::rename(temp_path(path), path) {
+                remove_temps();
+                return Err(e).with_context(|| format!("replacing {}", path.display()));
+            }
+            sync_dir(path)?;
+        }
+    }
+    Ok(())
 }
 
-fn write_pair_steps(board: &Pending) -> Result<()> {
-    write_temp(&board.pcb.0, &board.pcb.1)?;
-    write_temp(&board.project.0, &board.project.1)?;
-    for (path, _) in [&board.project, &board.pcb] {
-        std::fs::rename(temp_path(path), path)
-            .with_context(|| format!("replacing {}", path.display()))?;
-    }
+/// Flush the entries of the folder `path` is in, so a rename into it is on
+/// disk. Unix only: Windows cannot open a folder as a file to flush it.
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("flushing {}", dir.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -303,7 +339,7 @@ mod tests {
             pcb: (dir.join("b.snxpcb"), "pcb".into()),
             project: (dir.join("b.snxprj"), "prj".into()),
         };
-        write_pair(&board).expect("writes");
+        write_all(std::slice::from_ref(&board)).expect("writes");
         assert_eq!(std::fs::read_to_string(&board.pcb.0).expect("pcb"), "pcb");
         assert_eq!(
             std::fs::read_to_string(&board.project.0).expect("prj"),
@@ -311,6 +347,35 @@ mod tests {
         );
         assert!(!temp_path(&board.pcb.0).exists());
         assert!(!temp_path(&board.project.0).exists());
+        std::fs::remove_dir_all(&dir).expect("cleans up");
+    }
+
+    #[test]
+    fn a_write_that_fails_leaves_no_board_written() {
+        let dir = std::env::temp_dir().join(format!("snx-fail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a folder");
+        let missing = dir.join("no-such-folder");
+        let boards = [
+            Pending {
+                pcb: (dir.join("a.snxpcb"), "pcb".into()),
+                project: (dir.join("a.snxprj"), "prj".into()),
+            },
+            Pending {
+                pcb: (missing.join("b.snxpcb"), "pcb".into()),
+                project: (missing.join("b.snxprj"), "prj".into()),
+            },
+        ];
+        let error = write_all(&boards).expect_err("the second board cannot be written");
+        assert!(
+            format!("{error:#}").contains("nothing was written"),
+            "{error:#}"
+        );
+        for board in &boards {
+            for (path, _) in [&board.pcb, &board.project] {
+                assert!(!path.exists(), "{} written", path.display());
+                assert!(!temp_path(path).exists(), "{} left", path.display());
+            }
+        }
         std::fs::remove_dir_all(&dir).expect("cleans up");
     }
 }

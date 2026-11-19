@@ -5,7 +5,7 @@
 //! A `.kicad_pcb` into the `snx-writer` board model.
 
 use snx_writer::model::{
-    Board, BoardGraphic, NetClass, Point, Setup, Track, TrackArc, Via, ViaType,
+    Board, BoardGraphic, NetClass, Point, Setup, Track, TrackArc, Via, ViaType, Zone,
 };
 
 use crate::board_graphics;
@@ -19,6 +19,7 @@ use crate::outline::{self, EdgePiece};
 use crate::project::ProjectRules;
 use crate::report::Report;
 use crate::sexpr::{self, Atom, SExpr};
+use crate::stackup;
 use crate::zones;
 
 /// A converted board with the net classes for its project sidecar.
@@ -39,9 +40,13 @@ pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted
         ));
     }
     let mut report = Report::default();
+    if let Some(rules) = rules {
+        report.merge(&rules.report);
+    }
     let mut ids = Ids::seeded(text);
     let mut nets = NetTable::read(&root);
     let stack = Stack::read(&root, &mut report);
+    let physical_stack = stackup::read(&root, &stack, &mut report);
 
     let footprints: Vec<_> = {
         let mut cx = Context {
@@ -53,19 +58,28 @@ pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted
         root.children()
             .iter()
             .filter(|n| matches!(n.keyword(), Some("footprint" | "module")))
-            .map(|n| footprint::convert(n, &mut cx))
+            .filter_map(|n| footprint::convert(n, &mut cx))
             .collect()
     };
-    let tracks = tracks(&root, &stack, &mut nets, &mut ids, &mut report);
-    let arcs = arcs(&root, &stack, &mut nets, &mut ids, &mut report);
+    let mut tracks = tracks(&root, &stack, &mut nets, &mut ids, &mut report);
+    let mut arcs = arcs(&root, &stack, &mut nets, &mut ids, &mut report);
     let vias = vias(&root, &stack, &mut nets, &mut ids, &mut report);
     let mut zones: Vec<_> = root
         .find_all("zone")
         .into_iter()
         .flat_map(|z| zones::convert(z, &stack, &mut nets, &mut ids, &mut report))
         .collect();
+    zones.extend(footprint_zones(
+        &root,
+        &stack,
+        &mut nets,
+        &mut ids,
+        &mut report,
+    ));
     let drawings = board_graphics::read(&root, &stack, &mut nets, &mut ids, &mut report);
     zones.extend(drawings.solids);
+    tracks.extend(drawings.tracks);
+    arcs.extend(drawings.arcs);
     let (ring, edge_graphics) = edge(&drawings.edge_pieces, drawings.edge_graphics, &mut report);
     let mut graphics = drawings.graphics;
     graphics.extend(edge_graphics);
@@ -82,6 +96,7 @@ pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted
         uuid: ids.fresh(),
         thickness,
         layers: stack.layers.clone(),
+        physical_stack,
         setup: rules.map_or_else(Setup::default, |r| r.setup),
         nets: nets.nets(),
         footprints,
@@ -142,6 +157,42 @@ fn copper_layer(node: &SExpr, stack: &Stack, what: &str, report: &mut Report) ->
     }
 }
 
+/// The `(width w)` of a track or copper arc; `None` (reported) when it is
+/// missing or not a positive length.
+fn width_of(node: &SExpr, what: &str, report: &mut Report) -> Option<f64> {
+    match number_of(node, "width") {
+        Some(w) if w > 0.0 => Some(w),
+        _ => {
+            report.note(format!("{what} without a positive width dropped"));
+            None
+        }
+    }
+}
+
+/// Zones inside footprints (rule areas, mostly). The source stores their
+/// corners in board coordinates, so each becomes a board zone as it is;
+/// the footprint does not carry zones in the Signex board file.
+fn footprint_zones(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<Zone> {
+    let mut out = Vec::new();
+    for fp in root
+        .children()
+        .iter()
+        .filter(|n| matches!(n.keyword(), Some("footprint" | "module")))
+    {
+        for zone in fp.find_all("zone") {
+            report.note("footprint zone written as a board zone");
+            out.extend(zones::convert(zone, stack, nets, ids, report));
+        }
+    }
+    out
+}
+
 fn tracks(
     root: &SExpr,
     stack: &Stack,
@@ -158,11 +209,14 @@ fn tracks(
         let Some(layer) = copper_layer(node, stack, "track", report) else {
             continue;
         };
+        let Some(width) = width_of(node, "track", report) else {
+            continue;
+        };
         out.push(Track {
             uuid: ids.of(node, report),
             net: nets.of(node),
             layer,
-            width: number_of(node, "width").unwrap_or(0.25),
+            width,
             start,
             end,
         });
@@ -190,11 +244,14 @@ fn arcs(
         let Some(layer) = copper_layer(node, stack, "copper arc", report) else {
             continue;
         };
+        let Some(width) = width_of(node, "copper arc", report) else {
+            continue;
+        };
         out.push(TrackArc {
             uuid: ids.of(node, report),
             net: nets.of(node),
             layer,
-            width: number_of(node, "width").unwrap_or(0.25),
+            width,
             start,
             mid,
             end,
@@ -246,13 +303,22 @@ fn vias(
         } else {
             named
         };
-        let (position, _) = at_of(node);
+        let Some((position, _)) = at_of(node) else {
+            report.note("via without a readable position dropped");
+            continue;
+        };
+        let drill = number_of(node, "drill").unwrap_or(0.3);
+        let diameter = number_of(node, "size").unwrap_or(0.6);
+        if drill <= 0.0 || diameter <= 0.0 {
+            report.note("via without a positive drill and size dropped");
+            continue;
+        }
         out.push(Via {
             uuid: ids.of(node, report),
             net: nets.of(node),
             position,
-            drill: number_of(node, "drill").unwrap_or(0.3),
-            diameter: number_of(node, "size").unwrap_or(0.6),
+            drill,
+            diameter,
             layers,
             via_type,
         });

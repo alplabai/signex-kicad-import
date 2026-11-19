@@ -53,7 +53,9 @@ impl NetTable {
         self.net_of(item).map_or(0, |net| net.number)
     }
 
-    /// Like [`of`](Self::of), with the name; `None` for no net.
+    /// Like [`of`](Self::of), with the name; `None` for no net. A numbered
+    /// net the root table does not list takes the name the item gives it,
+    /// `(net 3 "GND")`.
     pub(crate) fn net_of(&mut self, item: &SExpr) -> Option<Net> {
         let node = item.find("net")?;
         let number = match raw_number(node) {
@@ -62,6 +64,12 @@ impl NetTable {
         };
         if number == 0 {
             return None;
+        }
+        if let Some(name) = node.arg(1).filter(|n| !n.is_empty())
+            && !self.by_number.contains_key(&number)
+        {
+            self.by_number.insert(number, name.to_string());
+            self.by_name.entry(name.to_string()).or_insert(number);
         }
         let name = self.by_number.get(&number).cloned().unwrap_or_default();
         Some(Net { number, name })
@@ -113,5 +121,18 @@ mod tests {
         let quoted_digit = nets.net_of(pads[2]).expect("a net");
         assert_eq!((quoted_digit.number, quoted_digit.name.as_str()), (4, "7"));
         assert_eq!(nets.nets().len(), 4);
+    }
+
+    #[test]
+    fn a_numbered_net_missing_from_the_table_takes_its_inline_name() {
+        let root =
+            sexpr::parse(r#"(kicad_pcb (net 1 "GND") (pad (net 5 "SDA")) (pad (net 5)))"#).unwrap();
+        let mut nets = NetTable::read(&root);
+        let pads = root.find_all("pad");
+        let net = nets.net_of(pads[0]).expect("a net");
+        assert_eq!((net.number, net.name.as_str()), (5, "SDA"));
+        assert_eq!(nets.net_of(pads[1]).expect("a net").name, "SDA");
+        let names: Vec<String> = nets.nets().into_iter().map(|n| n.name).collect();
+        assert_eq!(names, ["GND", "SDA"]);
     }
 }

@@ -26,12 +26,14 @@ mod ids;
 mod layers;
 mod nets;
 mod outline;
+mod pad_copper;
 pub mod pcb;
 pub mod placement_check;
 pub mod project;
 mod report;
 mod ring;
 pub mod sexpr;
+mod stackup;
 mod zones;
 
 pub use error::ParseError;

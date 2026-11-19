@@ -24,14 +24,22 @@
 use snx_writer::model::{Footprint, FootprintGraphic, Pad, PadShape, PadType, Point, Property};
 
 use crate::geometry::{
-    at_of, circumcenter, mirror_x, normalize_deg, number_of, point_args, point_of, stroke_width,
+    at_of, circle_polygon, circumcenter, mirror_x, normalize_deg, number_of, point_args, point_of,
+    ring_points, stroke_width,
 };
 use crate::ids::Ids;
 use crate::layers::Stack;
 use crate::nets::NetTable;
+use crate::pad_copper;
 use crate::report::Report;
 use crate::ring::{is_simple_ring, to_nm};
 use crate::sexpr::{Atom, SExpr};
+
+/// Degrees per chord when an arc in a pad or footprint polygon becomes
+/// corners.
+const ARC_STEP_DEG: f64 = 5.0;
+/// Corners of a round anchor or primitive in a custom pad's copper.
+const PAD_CIRCLE_CORNERS: usize = 48;
 
 /// The shared state footprint conversion reads and updates.
 pub(crate) struct Context<'a> {
@@ -107,8 +115,13 @@ fn field(fp: &SExpr, property: &str, text_kind: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
-    let (position, angle) = at_of(fp);
+/// The footprint; `None` (reported) when its position does not read.
+pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Option<Footprint> {
+    let Some((position, angle)) = at_of(fp) else {
+        cx.report
+            .note("footprint without a readable position dropped");
+        return None;
+    };
     let side = fp
         .find("layer")
         .and_then(SExpr::first_arg)
@@ -119,7 +132,7 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
     let pads = fp
         .find_all("pad")
         .into_iter()
-        .map(|p| pad(p, frame, cx))
+        .filter_map(|p| pad(p, frame, cx))
         .collect();
     let mut graphics: Vec<FootprintGraphic> = Vec::new();
     for child in fp.children() {
@@ -145,7 +158,7 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
         } else if is_source_metadata(key) {
             cx.report.note("source-tool metadata field dropped");
         } else {
-            properties.push(property(node, frame, cx.stack));
+            properties.push(property(node, frame, cx.stack, cx.report));
         }
     }
     // Older files keep the designator and value as `fp_text reference` /
@@ -159,13 +172,13 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
             .into_iter()
             .find(|t| t.first_arg() == Some(kind))
         {
-            let mut prop = property(text, frame, cx.stack);
+            let mut prop = property(text, frame, cx.stack, cx.report);
             prop.key = key.to_string();
             prop.value = text.arg(1).unwrap_or("").to_string();
             properties.push(prop);
         }
     }
-    Footprint {
+    Some(Footprint {
         uuid,
         reference: field(fp, "Reference", "reference"),
         value,
@@ -177,7 +190,7 @@ pub(crate) fn convert(fp: &SExpr, cx: &mut Context<'_>) -> Footprint {
         pads,
         graphics,
         properties,
-    }
+    })
 }
 
 /// The field a part imported from a binary-layout tool's library carries
@@ -200,12 +213,21 @@ fn pad_type(token: &str) -> PadType {
     }
 }
 
-fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Pad {
-    let (at, pad_angle) = at_of(node);
-    let size = node
+/// The pad; `None` (reported) when its position does not read or its size
+/// is not a positive length on both axes.
+fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Option<Pad> {
+    let Some((at, pad_angle)) = at_of(node) else {
+        cx.report.note("pad without a readable position dropped");
+        return None;
+    };
+    let Some(size) = node
         .find("size")
         .and_then(point_args)
-        .unwrap_or(Point::new(1.0, 1.0));
+        .filter(|s| s.x > 0.0 && s.y > 0.0)
+    else {
+        cx.report.note("pad without a positive size dropped");
+        return None;
+    };
     let kind = pad_type(node.arg(1).unwrap_or("smd"));
     let shape = pad_shape(node, size, frame, cx.report);
     let (drill, drill_shape) = drill_of(node, kind, cx.report);
@@ -222,7 +244,7 @@ fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Pad {
         })
         .unwrap_or_default();
     let layers = cx.stack.pad_layers(&names, cx.report);
-    Pad {
+    Some(Pad {
         uuid: cx.ids.of(node, cx.report),
         number: node.first_arg().unwrap_or("").to_string(),
         pad_type: kind,
@@ -234,7 +256,7 @@ fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Pad {
         drill_shape,
         layers,
         net: cx.nets.net_of(node),
-    }
+    })
 }
 
 /// `(drill d)`, `(drill oval w h)`, `(drill d (offset x y))`. A slot keeps
@@ -284,10 +306,9 @@ fn pad_shape(node: &SExpr, size: Point, frame: Frame, report: &mut Report) -> Pa
                 .find("rect_delta")
                 .and_then(point_args)
                 .unwrap_or_default();
-            let corners = trapezoid_corners(size, delta);
-            custom_or(corners, frame, PadShape::Rect, report)
+            trapezoid(size, delta, frame, report)
         }
-        "custom" => custom_pad(node, frame, report),
+        "custom" => custom_pad(node, size, frame, report),
         "rect" => PadShape::Rect,
         other => {
             report.note(format!("pad shape {other} written as a rectangle"));
@@ -308,36 +329,125 @@ fn trapezoid_corners(size: Point, delta: Point) -> Vec<Point> {
     ]
 }
 
-/// A custom pad: its first polygon primitive as the outline; the anchor
-/// shape when there is none or it is not a simple polygon.
-fn custom_pad(node: &SExpr, frame: Frame, report: &mut Report) -> PadShape {
-    let anchor = match node
+/// A trapezoid pad in the native `trapezoid` shape. The source's
+/// `rect_delta` `(a, b)` lengthens the pad's -x edge by `a` (and shortens
+/// its +x edge by as much) and lengthens its +y edge by `b`; Signex's delta
+/// `(x, y)` lengthens the +y edge by `x / 2` and the +x edge by `y / 2`. So
+/// the Signex delta is `(2b, -2a)`, with y negated again on the bottom,
+/// where the pad's x is mirrored. A delta on both axes, or one too wide for
+/// the pad, has no native form and becomes a custom outline.
+fn trapezoid(size: Point, source: Point, frame: Frame, report: &mut Report) -> PadShape {
+    let mut delta = Point::new(2.0 * source.y, -2.0 * source.x);
+    if frame.bottom {
+        delta.y = -delta.y;
+    }
+    let (dx, dy) = (to_nm(delta.x), to_nm(delta.y));
+    let fits = |d: i64, side: f64| d == 0 || i128::from(d).abs() < 2 * i128::from(to_nm(side));
+    if dx == 0 && dy == 0 {
+        return PadShape::Rect;
+    }
+    if dx != 0 && dy != 0 {
+        report.note("trapezoid pad narrowing on both axes written as a custom outline");
+    } else if fits(dx, size.x) && fits(dy, size.y) {
+        return PadShape::Trapezoid(delta);
+    } else {
+        report.note("trapezoid pad delta wider than the pad written as a custom outline");
+    }
+    custom_or(
+        trapezoid_corners(size, source),
+        frame,
+        PadShape::Rect,
+        report,
+    )
+}
+
+/// A custom pad: the anchor shape and every filled primitive merged into
+/// one outline. The anchor shape alone when there are no primitives; a
+/// primitive with no copper outline, a piece apart from the rest or a hole
+/// is reported.
+fn custom_pad(node: &SExpr, size: Point, frame: Frame, report: &mut Report) -> PadShape {
+    let (anchor, anchor_ring) = match node
         .find("options")
         .and_then(|o| o.find("anchor"))
         .and_then(SExpr::first_arg)
     {
-        Some("circle") => PadShape::Circle,
-        _ => PadShape::Rect,
+        Some("circle") => (
+            PadShape::Circle,
+            circle_polygon(Point::default(), size.x / 2.0, PAD_CIRCLE_CORNERS),
+        ),
+        _ => {
+            let (hx, hy) = (size.x / 2.0, size.y / 2.0);
+            (
+                PadShape::Rect,
+                vec![
+                    Point::new(-hx, -hy),
+                    Point::new(hx, -hy),
+                    Point::new(hx, hy),
+                    Point::new(-hx, hy),
+                ],
+            )
+        }
     };
+    let mut rings = vec![anchor_ring];
     let primitives = node.find("primitives").map(SExpr::children).unwrap_or(&[]);
-    let mut polygon: Option<Vec<Point>> = None;
     for primitive in primitives {
-        match primitive.keyword() {
-            Some("gr_poly") if polygon.is_none() => {
-                polygon = primitive.find("pts").map(|pts| {
-                    pts.find_all("xy")
-                        .into_iter()
-                        .filter_map(point_args)
-                        .collect()
-                });
+        match primitive_ring(primitive, report) {
+            Some(ring) => rings.push(ring),
+            None => {
+                if let Some(kind) = primitive.keyword() {
+                    report.note(format!("custom pad primitive {kind} dropped"));
+                }
             }
-            Some(kind) => report.note(format!("custom pad primitive {kind} dropped")),
-            None => {}
         }
     }
-    match polygon {
-        Some(corners) => custom_or(corners, frame, anchor, report),
-        None => anchor,
+    if rings.len() == 1 {
+        return anchor;
+    }
+    let Some(merged) = pad_copper::union(&rings) else {
+        report.note("custom pad copper that does not merge written as its anchor shape alone");
+        return anchor;
+    };
+    for _ in 0..merged.pieces_left_out {
+        report.note("custom pad copper apart from the rest of the pad dropped");
+    }
+    for _ in 0..merged.holes_filled {
+        report.note("hole in custom pad copper filled");
+    }
+    custom_or(merged.outline, frame, anchor, report)
+}
+
+/// The copper outline of one custom pad primitive in the pad frame: a
+/// polygon (arcs in it as chords), a filled rectangle or a filled circle.
+/// `None` for anything else.
+fn primitive_ring(primitive: &SExpr, report: &mut Report) -> Option<Vec<Point>> {
+    let filled = || {
+        matches!(
+            primitive.find("fill").and_then(SExpr::first_arg),
+            Some("yes" | "solid")
+        )
+    };
+    match primitive.keyword()? {
+        "gr_poly" => {
+            if stroke_width(primitive) > 0.0 {
+                report.note("custom pad polygon outline width ignored");
+            }
+            let mut unread = 0;
+            let ring = ring_points(primitive.find("pts")?, ARC_STEP_DEG, &mut unread);
+            for _ in 0..unread {
+                report.note("custom pad polygon corner that does not read dropped");
+            }
+            (ring.len() >= 3).then_some(ring)
+        }
+        "gr_rect" if filled() => {
+            let (s, e) = (point_of(primitive, "start")?, point_of(primitive, "end")?);
+            Some(vec![s, Point::new(e.x, s.y), e, Point::new(s.x, e.y)])
+        }
+        "gr_circle" if filled() => {
+            let (c, e) = (point_of(primitive, "center")?, point_of(primitive, "end")?);
+            let radius = (e.x - c.x).hypot(e.y - c.y);
+            (radius > 0.0).then(|| circle_polygon(c, radius, PAD_CIRCLE_CORNERS))
+        }
+        _ => None,
     }
 }
 
@@ -377,12 +487,17 @@ fn is_hidden(node: &SExpr) -> bool {
     has_flag(node, "hide") || node.find("effects").is_some_and(|e| has_flag(e, "hide"))
 }
 
-fn property(node: &SExpr, frame: Frame, stack: &Stack) -> Property {
-    let (at, angle) = at_of(node);
+fn property(node: &SExpr, frame: Frame, stack: &Stack, report: &mut Report) -> Property {
+    let placed = at_of(node);
+    if placed.is_none() && node.find("at").is_some() {
+        report.note("field position that does not read dropped; the field is kept");
+    }
+    let (position, angle) =
+        placed.map_or((None, 0.0), |(at, angle)| (Some(frame.local(at)), angle));
     Property {
         key: node.first_arg().unwrap_or("").to_string(),
         value: node.arg(1).unwrap_or("").to_string(),
-        position: node.find("at").map(|_| frame.local(at)),
+        position,
         rotation: frame.own_turn(angle),
         layer: node
             .find("layer")
@@ -409,6 +524,15 @@ fn graphic(
         "fp_arc" => "arc",
         "fp_poly" => "poly",
         "fp_text" => "text",
+        "model" => {
+            report.note("footprint 3D model dropped; the board file has no place for it");
+            return None;
+        }
+        "fp_text_box" | "fp_curve" | "dimension" | "image" => {
+            report.note(format!("footprint {kind} dropped"));
+            return None;
+        }
+        // Footprint zones become board zones (`pcb::footprint_zones`).
         _ => return None,
     };
     let layer_name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
@@ -449,30 +573,32 @@ fn graphic(
             g.end = Some(end);
         }
         "poly" => {
+            let mut unread = 0;
             g.points = node
                 .find("pts")
-                .map(|pts| {
-                    pts.find_all("xy")
-                        .into_iter()
-                        .filter_map(point_args)
-                        .map(|p| frame.local(p))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if node
-                .find("pts")
-                .is_some_and(|pts| pts.find("arc").is_some())
-            {
-                report.note("arc inside a footprint polygon dropped");
+                .map(|pts| ring_points(pts, ARC_STEP_DEG, &mut unread))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| frame.local(p))
+                .collect();
+            for _ in 0..unread {
+                report.note("footprint polygon corner that does not read dropped");
             }
         }
         _ => {
             // The designator and value texts are the Reference and Value
             // fields (see `convert`), not drawings.
-            if is_hidden(node) || matches!(node.first_arg(), Some("reference" | "value")) {
+            if matches!(node.first_arg(), Some("reference" | "value")) {
                 return None;
             }
-            let (at, angle) = at_of(node);
+            if is_hidden(node) {
+                report.note("hidden footprint text dropped; a drawing has no hidden state");
+                return None;
+            }
+            let Some((at, angle)) = at_of(node) else {
+                report.note("footprint text without a readable position dropped");
+                return None;
+            };
             g.text = node.arg(1).unwrap_or("").to_string();
             g.font_size = font_size(node).unwrap_or(1.0);
             g.position = Some(frame.local(at));

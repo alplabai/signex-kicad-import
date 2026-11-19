@@ -5,7 +5,9 @@
 use uuid::Uuid;
 
 use super::*;
-use crate::model::{Net, PadType, Setup, StackLayer, Track, Via, ViaType, Zone, ZoneKind};
+use crate::model::{
+    Net, PadType, PhysicalLayer, Setup, StackLayer, Track, Via, ViaType, Zone, ZoneKind,
+};
 
 fn id(n: u128) -> Uuid {
     Uuid::from_u128(n)
@@ -58,6 +60,31 @@ fn sample() -> Board {
                 display_name: String::new(),
             },
         ],
+        physical_stack: vec![
+            PhysicalLayer {
+                kind: "signal".into(),
+                layer: "TopCopper".into(),
+                material: "Copper".into(),
+                thickness_mm: 0.035,
+                copper_weight_oz: 1.0,
+                ..PhysicalLayer::default()
+            },
+            PhysicalLayer {
+                kind: "dielectric".into(),
+                material: "FR4".into(),
+                thickness_mm: 1.5,
+                dielectric_constant: 4.5,
+                ..PhysicalLayer::default()
+            },
+            PhysicalLayer {
+                kind: "signal".into(),
+                layer: "BottomCopper".into(),
+                material: "Copper".into(),
+                thickness_mm: 0.035,
+                copper_weight_oz: 1.0,
+                ..PhysicalLayer::default()
+            },
+        ],
         setup: Setup::default(),
         nets: vec![Net {
             number: 1,
@@ -75,6 +102,7 @@ fn sample() -> Board {
             pads: vec![
                 pad(1, PadShape::RoundRect(0.25), 0.0),
                 pad(2, PadShape::Custom(square), 90.0),
+                pad(3, PadShape::Trapezoid(Point::new(0.4, 0.0)), 0.0),
             ],
             graphics: vec![FootprintGraphic {
                 graphic_type: "line".into(),
@@ -157,7 +185,9 @@ fn sample() -> Board {
 }
 
 fn parsed() -> (String, toml::Value) {
-    let text = write_board(&sample());
+    let written = write_board(&sample());
+    assert_eq!(written.non_finite, 0);
+    let text = written.text;
     let value = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
     (text, value)
 }
@@ -221,10 +251,41 @@ fn pads_key_to_their_footprint_uuid_and_carry_optional_columns() {
     assert_eq!(pads[1][8], "roundrect");
     assert_eq!(pads[1][13], "0.25");
     assert_eq!(pads[2][8], "custom");
+    assert_eq!(header[15], "trapezoid_delta");
     assert_eq!(
-        pads[2][15],
+        pads[2][16],
         "-500000,-500000;500000,-500000;500000,500000;-500000,500000"
     );
+    assert_eq!(pads[3][8], "trapezoid");
+    assert_eq!(pads[3][15], "400000,0");
+    assert_eq!(pads[3][16], "\"\"");
+}
+
+#[test]
+fn the_physical_stack_is_written_as_stackup_rows() {
+    let (_, value) = parsed();
+    let rows = value["stackup"]["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["kind"].as_str(), Some("signal"));
+    assert_eq!(rows[0]["layer"].as_str(), Some("TopCopper"));
+    assert_eq!(rows[0]["copper_weight_oz"].as_float(), Some(1.0));
+    assert!(rows[0].get("dielectric_constant").is_none());
+    assert_eq!(rows[1]["kind"].as_str(), Some("dielectric"));
+    assert_eq!(rows[1]["thickness_mm"].as_float(), Some(1.5));
+    assert_eq!(rows[1]["dielectric_constant"].as_float(), Some(4.5));
+    assert!(rows[1].get("layer").is_none());
+    // The setup table is still read beside the rows.
+    assert_eq!(value["stackup"]["setup"]["clearance"].as_float(), Some(0.2));
+}
+
+#[test]
+fn a_number_that_is_not_finite_is_counted() {
+    let mut board = sample();
+    board.tracks[0].width = f64::NAN;
+    board.zones[0].clearance = f64::INFINITY;
+    let written = write_board(&board);
+    assert_eq!(written.non_finite, 2);
+    toml::from_str::<toml::Value>(&written.text).expect("still valid TOML");
 }
 
 #[test]

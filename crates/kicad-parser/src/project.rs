@@ -8,6 +8,7 @@ use serde_json::Value;
 use snx_writer::model::{NetClass, Setup};
 
 use crate::error::ParseError;
+use crate::report::Report;
 
 /// What the project file says about the board.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -16,6 +17,8 @@ pub struct ProjectRules {
     /// pattern `*` so it holds every net no other class takes.
     pub classes: Vec<NetClass>,
     pub setup: Setup,
+    /// What the project file held that the classes do not carry.
+    pub report: Report,
 }
 
 const DEFAULT_CLASS: &str = "Default";
@@ -24,11 +27,15 @@ const DEFAULT_CLASS: &str = "Default";
 pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
     let root: Value = serde_json::from_str(text)
         .map_err(|e| ParseError::InvalidValue(format!("project file: {e}")))?;
+    let mut report = Report::default();
     let settings = &root["net_settings"];
-    let mut classes: Vec<NetClass> = settings["classes"]
-        .as_array()
-        .map(|list| list.iter().filter_map(class_of).collect())
-        .unwrap_or_default();
+    let mut classes: Vec<NetClass> = Vec::new();
+    for value in settings["classes"].as_array().into_iter().flatten() {
+        match class_of(value) {
+            Some(class) => classes.push(class),
+            None => report.note("net class without a name dropped"),
+        }
+    }
     for entry in settings["netclass_patterns"]
         .as_array()
         .into_iter()
@@ -36,10 +43,14 @@ pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
     {
         let (Some(name), Some(pattern)) = (entry["netclass"].as_str(), entry["pattern"].as_str())
         else {
+            report.note("net class pattern without a class or pattern dropped");
             continue;
         };
-        if let Some(class) = classes.iter_mut().find(|c| c.name == name) {
-            class.patterns.push(pattern.to_string());
+        match classes.iter_mut().find(|c| c.name == name) {
+            Some(class) => class.patterns.push(pattern.to_string()),
+            None => {
+                report.note("net class pattern for a class the project does not define dropped")
+            }
         }
     }
     if let Some(assignments) = settings["netclass_assignments"].as_object() {
@@ -47,8 +58,10 @@ pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
             let name = value
                 .as_str()
                 .or_else(|| value.as_array()?.first()?.as_str());
-            if let Some(class) = name.and_then(|n| classes.iter_mut().find(|c| c.name == n)) {
-                class.nets.push(net.clone());
+            match name.and_then(|n| classes.iter_mut().find(|c| c.name == n)) {
+                Some(class) => class.nets.push(net.clone()),
+                None => report
+                    .note("net class assignment to a class the project does not define dropped"),
             }
         }
     }
@@ -61,8 +74,18 @@ pub fn parse_project_rules(text: &str) -> Result<ProjectRules, ParseError> {
         default.patterns = vec!["*".to_string()];
         classes.push(default);
     }
-    classes.retain(|c| c.name == DEFAULT_CLASS || !c.nets.is_empty() || !c.patterns.is_empty());
-    Ok(ProjectRules { classes, setup })
+    classes.retain(|c| {
+        let keep = c.name == DEFAULT_CLASS || !c.nets.is_empty() || !c.patterns.is_empty();
+        if !keep {
+            report.note("net class with no nets and no patterns dropped");
+        }
+        keep
+    });
+    Ok(ProjectRules {
+        classes,
+        setup,
+        report,
+    })
 }
 
 fn mm(value: &Value) -> f64 {
@@ -127,8 +150,11 @@ mod tests {
           { "name": "Power", "clearance": 0.2, "track_width": 0.5 },
           { "name": "Unused", "clearance": 0.3 }
         ],
-        "netclass_patterns": [ { "netclass": "Power", "pattern": "+*V*" } ],
-        "netclass_assignments": { "GND": "Power" }
+        "netclass_patterns": [
+          { "netclass": "Power", "pattern": "+*V*" },
+          { "netclass": "Gone", "pattern": "X*" }
+        ],
+        "netclass_assignments": { "GND": "Power", "N1": "Missing" }
       }
     }"#;
 
@@ -141,6 +167,24 @@ mod tests {
         assert_eq!(rules.classes[0].nets, ["GND"]);
         assert_eq!(rules.classes[0].trace_width, 0.5);
         assert_eq!(rules.classes[1].patterns, ["*"]);
+    }
+
+    #[test]
+    fn dropped_classes_patterns_and_assignments_are_reported() {
+        let rules = parse_project_rules(PROJECT).expect("parses");
+        let summary = rules.report.summary();
+        assert!(
+            summary.contains("1 x net class with no nets and no patterns dropped"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("1 x net class pattern for a class the project does not define"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("1 x net class assignment to a class the project does not define"),
+            "{summary}"
+        );
     }
 
     #[test]

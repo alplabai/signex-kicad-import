@@ -42,6 +42,17 @@ Layer names are tokens: `TopCopper`, `Inner1Copper` to `Inner30Copper`,
 string otherwise; `[stackup.display_names]` maps a token to the name the
 board gives that layer.
 
+## Physical stack
+
+The board's physical stack is an optional `[[stackup.rows]]` list, top to
+bottom. Each row has `kind` (`signal`, `plane`, `dielectric`,
+`solder_mask`, `paste` or `overlay`) and `thickness_mm`; `name`, `layer`
+(the copper token of a copper row), `material`, `dielectric_constant`
+(Er) and `copper_weight_oz` are left out when empty or 0. The copper rows
+name the board's copper layers, top to bottom, each once; every number is
+finite and not negative. A board without rows shows a stack Signex
+derives from its layers and thickness.
+
 ## Footprints and pads
 
 A footprint row carries the footprint's position, its turn in degrees and
@@ -60,6 +71,21 @@ as `x,y;x,y;...` in whole nanometres, in the pad's own frame. Signex refuses
 an outline that is not a simple polygon on those whole-nanometre corners:
 fewer than three corners, a zero-length edge, no area, two edges in a row
 that fold back on each other, or two other edges that touch or cross.
+Signex draws a custom pad from this outline alone; the pad's size does
+not add copper.
+
+## Trapezoid pads
+
+A `trapezoid` pad carries its delta in the optional `trapezoid_delta`
+column as `x,y` in whole nanometres, in the pad's own frame. `size` is the
+pad's box through its middle. A delta `x` makes the +y edge `size.x + x/2`
+long and the -y edge `size.x - x/2`; a delta `y` does the same for the +x
+and -x edges along y. So the corners, counter-clockwise from the -x -y
+corner with `hw`, `hh` half the size and `qx`, `qy` a quarter of the
+delta, are `(-(hw - qx), -(hh - qy))`, `(hw - qx, -(hh + qy))`,
+`(hw + qx, hh + qy)`, `(-(hw + qx), hh - qy)`. Signex refuses a trapezoid
+with no delta, a delta on both axes, or a delta of at least twice the side
+it narrows.
 
 ## Zones
 

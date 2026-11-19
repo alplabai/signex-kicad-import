@@ -85,7 +85,7 @@ fn board_classes_put_the_default_last() {
 
 #[test]
 fn the_written_board_is_valid_toml_with_no_source_generator() {
-    let text = snx_writer::write_board(&converted().board);
+    let text = snx_writer::write_board(&converted().board).text;
     assert!(!text.contains("pcbnew"));
     let value: toml::Value = toml::from_str(&text).expect("valid TOML");
     assert_eq!(value["format"].as_str(), Some("snxpcb/1.4"));
@@ -93,8 +93,8 @@ fn the_written_board_is_valid_toml_with_no_source_generator() {
 
 #[test]
 fn the_same_input_writes_the_same_file() {
-    let a = snx_writer::write_board(&converted().board);
-    let b = snx_writer::write_board(&converted().board);
+    let a = snx_writer::write_board(&converted().board).text;
+    let b = snx_writer::write_board(&converted().board).text;
     assert_eq!(a, b);
 }
 
@@ -113,6 +113,49 @@ fn the_board_origin_is_the_aux_origin_else_the_grid_origin() {
         Some(Point::new(1.0, 2.0))
     );
     assert_eq!(origin("(setup (pad_to_mask_clearance 0))"), None);
+}
+
+#[test]
+fn footprint_zones_become_board_zones_and_bad_widths_are_reported() {
+    let text = r#"(kicad_pcb (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+  (footprint "Lib:Ant" (layer "F.Cu") (at 10 10)
+    (zone (net 0) (net_name "") (layer "F.Cu")
+      (keepout (tracks not_allowed) (vias not_allowed) (pads allowed)
+        (copperpour not_allowed) (footprints allowed))
+      (polygon (pts (xy 9 9) (xy 11 9) (xy 11 11) (xy 9 11)))))
+  (segment (start 0 0) (end 1 0) (width -0.2) (layer "F.Cu") (net 0))
+  (segment (start 0 0) (end 1 0) (layer "F.Cu") (net 0))
+  (via (at 1 nan) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 0)))"#;
+    let c = convert_pcb(text, None).expect("converts");
+    assert_eq!(c.board.zones.len(), 1);
+    assert_eq!(c.board.zones[0].kind, snx_writer::model::ZoneKind::Keepout);
+    assert_eq!(c.board.zones[0].outline[0], Point::new(9.0, 9.0));
+    assert!(c.board.tracks.is_empty());
+    assert!(c.board.vias.is_empty());
+    let summary = c.report.summary();
+    assert!(
+        summary.contains("footprint zone written as a board zone"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("2 x track without a positive width dropped"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("via without a readable position dropped"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn project_rule_notes_reach_the_board_report() {
+    let mut rules = crate::project::ProjectRules::default();
+    rules
+        .report
+        .note("net class with no nets and no patterns dropped");
+    let c =
+        convert_pcb(r#"(kicad_pcb (layers (0 "F.Cu" signal)))"#, Some(&rules)).expect("converts");
+    assert!(c.report.summary().contains("net class with no nets"));
 }
 
 #[test]

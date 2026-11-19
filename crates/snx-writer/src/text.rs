@@ -5,9 +5,27 @@
 //! Text primitives of the format: TOML values, nanometre cells and TSV
 //! blocks embedded in TOML multi-line strings.
 
+use std::cell::Cell;
 use std::fmt::Write as _;
 
 use crate::model::Point;
+
+thread_local! {
+    /// How many numbers that are not finite this thread has written as 0
+    /// since the last [`take_non_finite`].
+    static NON_FINITE: Cell<usize> = const { Cell::new(0) };
+}
+
+fn note_non_finite() {
+    NON_FINITE.with(|n| n.set(n.get() + 1));
+}
+
+/// The count of numbers written as 0 because they were not finite, reset
+/// to 0. The writer takes it before and after a file, so the file's count
+/// reaches the caller's report.
+pub(crate) fn take_non_finite() -> usize {
+    NON_FINITE.with(|n| n.replace(0))
+}
 
 /// A TOML basic string, quoted.
 pub(crate) fn toml_string(s: &str) -> String {
@@ -35,10 +53,14 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// A TOML float. Non-finite input writes 0: the format refuses `nan` and
-/// `inf`, and every caller passes a measured length or angle.
+/// A TOML float. Non-finite input writes 0 and is counted (see
+/// [`take_non_finite`]): the format refuses `nan` and `inf`.
 pub(crate) fn toml_float(v: f64) -> String {
-    if !v.is_finite() || v == 0.0 {
+    if !v.is_finite() {
+        note_non_finite();
+        return "0.0".to_string();
+    }
+    if v == 0.0 {
         return "0.0".to_string();
     }
     // `{:?}` always carries a `.` or an exponent, so TOML reads a float.
@@ -56,17 +78,24 @@ pub(crate) fn toml_points(points: &[Point]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-/// Millimetres as whole nanometres, half away from zero.
+/// Millimetres as whole nanometres, half away from zero. Non-finite input
+/// writes 0 and is counted.
 pub(crate) fn nm(mm: f64) -> i64 {
     if !mm.is_finite() {
+        note_non_finite();
         return 0;
     }
     (mm * 1.0e6).round() as i64
 }
 
-/// A plain number cell: no trailing `.0` for whole values.
+/// A plain number cell: no trailing `.0` for whole values. Non-finite
+/// input writes 0 and is counted.
 pub(crate) fn number_cell(v: f64) -> String {
-    if !v.is_finite() || v == 0.0 {
+    if !v.is_finite() {
+        note_non_finite();
+        return "0".to_string();
+    }
+    if v == 0.0 {
         return "0".to_string();
     }
     if v.fract() == 0.0 && v.abs() < 1.0e15 {
@@ -165,8 +194,18 @@ mod tests {
     fn floats_always_read_as_toml_floats() {
         assert_eq!(toml_float(1.0), "1.0");
         assert_eq!(toml_float(0.0), "0.0");
-        assert_eq!(toml_float(f64::NAN), "0.0");
         assert_eq!(toml_float(-0.25), "-0.25");
+    }
+
+    #[test]
+    fn numbers_that_are_not_finite_write_0_and_are_counted() {
+        take_non_finite();
+        assert_eq!(toml_float(f64::NAN), "0.0");
+        assert_eq!(nm(f64::INFINITY), 0);
+        assert_eq!(number_cell(f64::NEG_INFINITY), "0");
+        assert_eq!(toml_float(0.0), "0.0");
+        assert_eq!(take_non_finite(), 3);
+        assert_eq!(take_non_finite(), 0);
     }
 
     #[test]

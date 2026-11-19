@@ -9,11 +9,12 @@
 //! in TOML tables are millimetres.
 
 use crate::model::{
-    Board, BoardGraphic, BoardText, Footprint, FootprintGraphic, Pad, PadShape, Point, Property,
-    StackLayer, TrackArc, Zone,
+    Board, BoardGraphic, BoardText, Footprint, FootprintGraphic, Pad, PadShape, PhysicalLayer,
+    Point, Property, StackLayer, TrackArc, Zone,
 };
 use crate::text::{
-    nm, number_cell, toml_float, toml_point, toml_points, toml_string, tsv_cell, tsv_section,
+    nm, number_cell, take_non_finite, toml_float, toml_point, toml_points, toml_string, tsv_cell,
+    tsv_section,
 };
 
 /// The format token this writer produces.
@@ -22,8 +23,27 @@ pub const FORMAT_TOKEN: &str = "snxpcb/1.4";
 /// The `generator` header value.
 pub const GENERATOR: &str = "signex-import";
 
+/// A written board file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The `.snxpcb` text.
+    pub text: String,
+    /// How many numbers were not finite and were written as 0; the caller
+    /// reports them.
+    pub non_finite: usize,
+}
+
 /// The board as `.snxpcb` text.
-pub fn write_board(board: &Board) -> String {
+pub fn write_board(board: &Board) -> Written {
+    take_non_finite();
+    let text = board_text(board);
+    Written {
+        text,
+        non_finite: take_non_finite(),
+    }
+}
+
+fn board_text(board: &Board) -> String {
     let mut out = header(board);
     out.push_str(&stackup(board));
     out.push_str(&nets(board));
@@ -106,6 +126,38 @@ fn stackup(board: &Board) -> String {
     ] {
         out.push_str(&format!("{key} = {}\n", toml_float(value)));
     }
+    for row in &board.physical_stack {
+        out.push_str(&stack_row(row));
+    }
+    out
+}
+
+/// One `[[stackup.rows]]` table. Empty text and zero Er or weight are left
+/// out, as a Signex save leaves them out.
+fn stack_row(row: &PhysicalLayer) -> String {
+    let mut out = String::from("\n[[stackup.rows]]\n");
+    out.push_str(&format!("kind = {}\n", toml_string(&row.kind)));
+    for (key, value) in [
+        ("name", &row.name),
+        ("layer", &row.layer),
+        ("material", &row.material),
+    ] {
+        if !value.is_empty() {
+            out.push_str(&format!("{key} = {}\n", toml_string(value)));
+        }
+    }
+    out.push_str(&format!(
+        "thickness_mm = {}\n",
+        toml_float(row.thickness_mm)
+    ));
+    for (key, value) in [
+        ("dielectric_constant", row.dielectric_constant),
+        ("copper_weight_oz", row.copper_weight_oz),
+    ] {
+        if value != 0.0 {
+            out.push_str(&format!("{key} = {}\n", toml_float(value)));
+        }
+    }
     out
 }
 
@@ -167,6 +219,7 @@ fn pad_table(footprints: &[Footprint]) -> String {
             .flat_map(|fp| fp.pads.iter().map(move |p| (fp, p)))
     };
     let has_rotation = pads().any(|(_, p)| p.rotation != 0.0);
+    let has_delta = pads().any(|(_, p)| matches!(p.shape, PadShape::Trapezoid(_)));
     let has_outline = pads().any(|(_, p)| matches!(p.shape, PadShape::Custom(_)));
     let mut names = vec![
         "uuid",
@@ -187,16 +240,30 @@ fn pad_table(footprints: &[Footprint]) -> String {
     if has_rotation {
         names.push("rotation");
     }
+    if has_delta {
+        names.push("trapezoid_delta");
+    }
     if has_outline {
         names.push("custom_outline");
     }
-    let rows: Vec<Vec<String>> = pads()
-        .map(|(fp, pad)| pad_row(fp, pad, has_rotation, has_outline))
-        .collect();
+    let columns = PadColumns {
+        rotation: has_rotation,
+        delta: has_delta,
+        outline: has_outline,
+    };
+    let rows: Vec<Vec<String>> = pads().map(|(fp, pad)| pad_row(fp, pad, columns)).collect();
     tsv_section("pads", &header_cells(&names), &rows)
 }
 
-fn pad_row(fp: &Footprint, pad: &Pad, has_rotation: bool, has_outline: bool) -> Vec<String> {
+/// Which optional pad columns the table has.
+#[derive(Clone, Copy)]
+struct PadColumns {
+    rotation: bool,
+    delta: bool,
+    outline: bool,
+}
+
+fn pad_row(fp: &Footprint, pad: &Pad, columns: PadColumns) -> Vec<String> {
     let ratio = match pad.shape {
         PadShape::RoundRect(r) => r.clamp(0.0, 0.5),
         _ => 0.0,
@@ -221,14 +288,20 @@ fn pad_row(fp: &Footprint, pad: &Pad, has_rotation: bool, has_outline: bool) -> 
         tsv_cell(net_name),
         number_cell(ratio),
     ];
-    if has_rotation {
+    if columns.rotation {
         row.push(if pad.rotation == 0.0 {
             tsv_cell("")
         } else {
             number_cell(pad.rotation)
         });
     }
-    if has_outline {
+    if columns.delta {
+        row.push(match pad.shape {
+            PadShape::Trapezoid(d) => format!("{},{}", nm(d.x), nm(d.y)),
+            _ => tsv_cell(""),
+        });
+    }
+    if columns.outline {
         row.push(match &pad.shape {
             PadShape::Custom(corners) => tsv_cell(&outline_cell(corners)),
             _ => tsv_cell(""),

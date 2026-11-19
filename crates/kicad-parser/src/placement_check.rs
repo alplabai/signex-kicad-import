@@ -122,6 +122,11 @@ pub fn tally_track_ends(board: &Board) -> EndTally {
     let grid = Grid::new(sites);
     let mut tally = EndTally::default();
     let mut count = |p: Point, net: u32, layer: &str| {
+        // A track with no net (a copper drawing's stroke) says nothing
+        // about where the pads sit.
+        if net == 0 {
+            return;
+        }
         tally.total += 1;
         let nets = grid.nets_at(p, layer);
         if nets.contains(&net) {

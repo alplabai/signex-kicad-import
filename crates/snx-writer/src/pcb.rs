@@ -36,14 +36,14 @@ pub struct Written {
 /// The board as `.snxpcb` text.
 pub fn write_board(board: &Board) -> Written {
     take_non_finite();
-    let text = board_text(board);
+    let text = file_text(board);
     Written {
         text,
         non_finite: take_non_finite(),
     }
 }
 
-fn board_text(board: &Board) -> String {
+fn file_text(board: &Board) -> String {
     let mut out = header(board);
     out.push_str(&stackup(board));
     out.push_str(&nets(board));

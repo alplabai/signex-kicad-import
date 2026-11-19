@@ -212,8 +212,8 @@ fn pieces_of(ring: &[P], cuts: &[Vec<P>]) -> Vec<(P, P)> {
 
 /// `a` ∪ `b`: the copper rings and the number of holes.
 fn union_two(a: &[P], b: &[P]) -> Option<(Vec<Ring>, usize)> {
-    let mut cuts_a = vec![Vec::new(); a.len()];
-    let mut cuts_b = vec![Vec::new(); b.len()];
+    let mut cuts_a: Vec<Vec<P>> = vec![Vec::new(); a.len()];
+    let mut cuts_b: Vec<Vec<P>> = vec![Vec::new(); b.len()];
     for i in 0..a.len() {
         for j in 0..b.len() {
             let points = meeting_points(a[i], a[(i + 1) % a.len()], b[j], b[(j + 1) % b.len()]);

@@ -311,7 +311,7 @@ fn strokes(
     let mut uuid = |ids: &mut Ids| first.take().unwrap_or_else(|| ids.fresh());
     for (start, end) in segments.into_iter().filter(|(s, e)| s != e) {
         out.tracks.push(Track {
-            uuid: uuid(ids),
+            uuid: uuid(&mut *ids),
             net,
             layer: g.layer.clone(),
             width: g.width,
@@ -321,7 +321,7 @@ fn strokes(
     }
     for [start, mid, end] in arcs {
         out.arcs.push(TrackArc {
-            uuid: uuid(ids),
+            uuid: uuid(&mut *ids),
             net,
             layer: g.layer.clone(),
             width: g.width,

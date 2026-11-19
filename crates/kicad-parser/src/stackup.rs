@@ -37,12 +37,13 @@ pub(crate) fn read(root: &SExpr, stack: &Stack, report: &mut Report) -> Vec<Phys
             rows.push(row);
         }
     }
-    let copper: Vec<&str> = rows
+    let board_copper = stack.copper();
+    let matches = rows
         .iter()
         .filter(|r| !r.layer.is_empty())
         .map(|r| r.layer.as_str())
-        .collect();
-    if copper != stack.copper() {
+        .eq(board_copper.iter().map(String::as_str));
+    if !matches {
         report.note("stackup copper does not match the board's copper layers; stackup not written");
         return Vec::new();
     }

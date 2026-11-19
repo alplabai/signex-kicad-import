@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 alplab and contributors. See LICENSE.
+
+//! The errors that stop a conversion.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

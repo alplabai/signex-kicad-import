@@ -236,19 +236,13 @@ dependencies = [
 
 [[package]]
 name = "kicad-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "signex-types",
+ "serde_json",
+ "snx-writer",
  "thiserror",
+ "toml",
  "uuid",
-]
-
-[[package]]
-name = "kicad-writer"
-version = "0.1.0"
-dependencies = [
- "kicad-parser",
- "signex-types",
 ]
 
 [[package]]
@@ -346,7 +340,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
- "serde_derive",
 ]
 
 [[package]]
@@ -393,28 +386,13 @@ dependencies = [
 
 [[package]]
 name = "signex-kicad-import"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
  "kicad-parser",
- "kicad-writer",
- "serde",
  "serde_json",
- "signex-types",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "signex-types"
-version = "0.9.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "uuid",
+ "snx-writer",
 ]
 
 [[package]]
@@ -422,6 +400,15 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "snx-writer"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "toml",
+ "uuid",
+]
 
 [[package]]
 name = "strsim"
@@ -527,7 +514,6 @@ checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom",
  "js-sys",
- "serde_core",
  "wasm-bindgen",
 ]
 

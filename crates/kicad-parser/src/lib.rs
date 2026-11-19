@@ -12,26 +12,31 @@
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
-//
-// Original Signex authorship: this file was written for the main
-// signex repository (Apache-2.0) and was relocated to this GPL-3.0
-// companion as part of the issue-62 licensing remediation.
 
-//! KiCad S-expression parser -- .kicad_sch, .kicad_pcb, .kicad_sym files.
-#![allow(
-    clippy::collapsible_if,
-    clippy::redundant_closure,
-    clippy::unnecessary_lazy_evaluations
-)]
+//! KiCad board reader: a `.kicad_pcb` (and the net classes and rules of
+//! the `.kicad_pro` beside it) into the `snx-writer` board model, in Signex
+//! conventions: Signex layer tokens, footprint-local pad coordinates that
+//! Signex mirrors itself on the bottom side, and Signex rotation sense.
 
+mod board_graphics;
 pub mod error;
+mod footprint;
+mod geometry;
+mod ids;
+mod layers;
+mod nets;
+mod outline;
+mod pad_copper;
 pub mod pcb;
-pub mod schematic;
+pub mod placement_check;
+pub mod project;
+mod report;
+mod ring;
 pub mod sexpr;
-pub mod sexpr_builder;
-pub mod symbol_lib;
+mod stackup;
+mod zones;
 
 pub use error::ParseError;
-pub use pcb::{parse_pcb, parse_pcb_file};
-pub use schematic::{parse_project, parse_schematic, parse_schematic_file};
-pub use symbol_lib::parse_symbol_lib;
+pub use pcb::{Converted, convert_pcb};
+pub use project::{ProjectRules, parse_project_rules};
+pub use report::Report;

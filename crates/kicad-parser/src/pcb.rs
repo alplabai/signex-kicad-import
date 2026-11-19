@@ -1,1051 +1,367 @@
-use std::path::Path;
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 alplab and contributors. See LICENSE.
 
-use uuid::Uuid;
+//! A `.kicad_pcb` into the `snx-writer` board model.
 
-use signex_types::pcb::{
-    BoardGraphic, BoardText, DrillDef, Footprint, FpGraphic, LayerDef, NetDef, PCB_COINCIDENCE_EPS,
-    PCB_DEFAULT_CLEARANCE_MM, PCB_DEFAULT_GRAPHIC_WIDTH_MM, PCB_DEFAULT_PAD_SIZE_MM,
-    PCB_DEFAULT_TEXT_SIZE_MM, PCB_DEFAULT_THICKNESS_MM, PCB_DEFAULT_TRACE_WIDTH_MM,
-    PCB_DEFAULT_VIA_DIAMETER_MM, PCB_DEFAULT_VIA_DRILL_MM, PCB_GRID_MM, PCB_THERMAL_BRIDGE_MM,
-    PCB_THERMAL_GAP_MM, PCB_TRACK_MIN_MM, PCB_VIA_MIN_DIAMETER_MM, PCB_VIA_MIN_DRILL_MM,
-    PCB_ZONE_MIN_THICKNESS_MM, Pad, PadNet, PadShape, PadType, PcbBoard, PcbSetup, Point, Segment,
-    Via, ViaType, Zone,
+use snx_writer::model::{
+    Board, BoardGraphic, NetClass, Point, Setup, Track, TrackArc, Via, ViaType, Zone,
 };
-use signex_types::property::PcbProperty;
 
+use crate::board_graphics;
 use crate::error::ParseError;
-use crate::sexpr::{self, SExpr};
+use crate::footprint::{self, Context};
+use crate::geometry::{at_of, number_of, point_of};
+use crate::ids::Ids;
+use crate::layers::{Stack, is_copper};
+use crate::nets::NetTable;
+use crate::outline::{self, EdgePiece};
+use crate::project::ProjectRules;
+use crate::report::Report;
+use crate::sexpr::{self, Atom, SExpr};
+use crate::stackup;
+use crate::zones;
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-fn parse_point(node: &SExpr) -> Point {
-    Point {
-        x: node
-            .arg(0)
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0),
-        y: node
-            .arg(1)
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0),
-    }
+/// A converted board with the net classes for its project sidecar.
+#[derive(Debug, Clone)]
+pub struct Converted {
+    pub board: Board,
+    pub classes: Vec<NetClass>,
+    pub report: Report,
 }
 
-fn parse_at(node: &SExpr) -> (Point, f64) {
-    if let Some(at) = node.find("at") {
-        let x = at.arg(0).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let y = at.arg(1).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        let rot = at.arg(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-        (Point { x, y }, rot)
-    } else {
-        (Point { x: 0.0, y: 0.0 }, 0.0)
-    }
-}
-
-fn parse_uuid(node: &SExpr) -> Uuid {
-    node.find("uuid")
-        .and_then(|u: &SExpr| u.first_arg())
-        .and_then(|s: &str| Uuid::parse_str(s).ok())
-        .unwrap_or_else(Uuid::new_v4)
-}
-
-fn parse_pad_type(s: &str) -> PadType {
-    match s {
-        "thru_hole" => PadType::Thru,
-        "smd" => PadType::Smd,
-        "connect" => PadType::Connect,
-        "np_thru_hole" => PadType::NpThru,
-        _ => PadType::Smd,
-    }
-}
-
-fn parse_pad_shape(s: &str) -> PadShape {
-    match s {
-        "circle" => PadShape::Circle,
-        "rect" => PadShape::Rect,
-        "oval" => PadShape::Oval,
-        "trapezoid" => PadShape::Trapezoid,
-        "roundrect" => PadShape::RoundRect,
-        "custom" => PadShape::Custom,
-        _ => PadShape::Rect,
-    }
-}
-
-fn parse_via_type(s: &str) -> ViaType {
-    match s {
-        "blind" => ViaType::Blind,
-        "micro" => ViaType::Micro,
-        _ => ViaType::Through,
-    }
-}
-
-fn parse_pcb_property(node: &SExpr) -> PcbProperty {
-    let (position, rotation) = parse_at(node);
-    let layer = node
-        .find("layer")
-        .and_then(|child| child.first_arg())
-        .map(ToOwned::to_owned);
-    let font_size = node
-        .find("effects")
-        .and_then(|effects| effects.find("font"))
-        .and_then(|font| font.find("size"))
-        .and_then(|size| size.first_arg())
-        .and_then(|value| value.parse::<f64>().ok());
-    let hidden = node.find("hide").is_some()
-        || node
-            .find("effects")
-            .map(|effects| {
-                effects.find("hide").is_some()
-                    || effects
-                        .children()
-                        .iter()
-                        .any(|child| matches!(child, SExpr::Atom(atom) if atom.as_str() == "hide"))
-            })
-            .unwrap_or(false);
-
-    PcbProperty {
-        key: node.first_arg().unwrap_or("").to_string(),
-        value: node.arg(1).unwrap_or("").to_string(),
-        position: node.find("at").map(|_| position),
-        rotation,
-        layer,
-        font_size,
-        hidden,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Main PCB parser
-// ---------------------------------------------------------------------------
-
-/// Parse a `.kicad_pcb` file from its string contents.
-pub fn parse_pcb(content: &str) -> Result<PcbBoard, ParseError> {
-    let root = sexpr::parse(content)?;
-
+/// Convert `.kicad_pcb` text; `rules` are the project file's net classes
+/// and board rules when there is one.
+pub fn convert_pcb(text: &str, rules: Option<&ProjectRules>) -> Result<Converted, ParseError> {
+    let root = sexpr::parse(text)?;
     if root.keyword() != Some("kicad_pcb") {
-        return Err(ParseError::InvalidSExpr("Not a KiCad PCB file".to_string()));
+        return Err(ParseError::InvalidSExpr(
+            "not a KiCad board file".to_string(),
+        ));
     }
-
-    let version = root
-        .find("version")
-        .and_then(|v| v.first_arg())
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
-
-    let generator = root
-        .find("generator")
-        .and_then(|g| g.first_arg())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let uuid = parse_uuid(&root);
-
-    // Layers
-    let layers: Vec<LayerDef> = if let Some(layers_node) = root.find("layers") {
-        layers_node
-            .children()
-            .iter()
-            .filter_map(|l| {
-                let id_num = l.first_arg()?.parse::<u8>().ok()?;
-                let name = l.arg(1)?;
-                let ltype = l.arg(2).unwrap_or("signal");
-                Some(LayerDef {
-                    id: id_num,
-                    name: name.to_string(),
-                    layer_type: ltype.to_string(),
-                })
-            })
-            .collect()
-    } else {
-        vec![]
-    };
-
-    // Setup
-    let setup = if let Some(s) = root.find("setup") {
-        Some(PcbSetup {
-            grid_size: s
-                .find("grid_origin")
-                .and_then(|g| g.arg(0)?.parse().ok())
-                .unwrap_or(PCB_GRID_MM),
-            trace_width: s
-                .find("trace_min")
-                .and_then(|t| t.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_CLEARANCE_MM),
-            via_diameter: s
-                .find("via_size")
-                .and_then(|v| v.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_VIA_DIAMETER_MM),
-            via_drill: s
-                .find("via_drill")
-                .and_then(|v| v.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_VIA_DRILL_MM),
-            clearance: s
-                .find("clearance")
-                .and_then(|c| c.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_CLEARANCE_MM),
-            track_min_width: s
-                .find("trace_min")
-                .and_then(|t| t.first_arg()?.parse().ok())
-                .unwrap_or(PCB_TRACK_MIN_MM),
-            via_min_diameter: s
-                .find("via_size")
-                .and_then(|v| v.first_arg()?.parse().ok())
-                .unwrap_or(PCB_VIA_MIN_DIAMETER_MM),
-            via_min_drill: s
-                .find("via_drill")
-                .and_then(|v| v.first_arg()?.parse().ok())
-                .unwrap_or(PCB_VIA_MIN_DRILL_MM),
-        })
-    } else {
-        Some(PcbSetup {
-            grid_size: PCB_GRID_MM,
-            trace_width: PCB_DEFAULT_TRACE_WIDTH_MM,
-            via_diameter: PCB_DEFAULT_VIA_DIAMETER_MM,
-            via_drill: PCB_DEFAULT_VIA_DRILL_MM,
-            clearance: PCB_DEFAULT_CLEARANCE_MM,
-            track_min_width: PCB_TRACK_MIN_MM,
-            via_min_diameter: PCB_VIA_MIN_DIAMETER_MM,
-            via_min_drill: PCB_VIA_MIN_DRILL_MM,
-        })
-    };
-
-    // Nets
-    let nets: Vec<NetDef> = root
-        .find_all("net")
-        .iter()
-        .filter_map(|n| {
-            let num: u32 = n.first_arg()?.parse().ok()?;
-            let name = n.arg(1).unwrap_or("").to_string();
-            Some(NetDef { number: num, name })
-        })
-        .collect();
-
-    // Board outline (from Edge.Cuts lines)
-    let mut outline_points = Vec::new();
-    for gr in root.find_all("gr_line") {
-        let layer = gr.find("layer").and_then(|l| l.first_arg()).unwrap_or("");
-        if layer == "Edge.Cuts" {
-            if let (Some(start), Some(end)) = (gr.find("start"), gr.find("end")) {
-                let s = parse_point(start);
-                let e = parse_point(end);
-                if outline_points.is_empty()
-                    || outline_points
-                        .last()
-                        .map(|p: &Point| {
-                            (p.x - s.x).abs() > PCB_COINCIDENCE_EPS
-                                || (p.y - s.y).abs() > PCB_COINCIDENCE_EPS
-                        })
-                        .unwrap_or(true)
-                {
-                    outline_points.push(s);
-                }
-                outline_points.push(e);
-            }
-        }
+    let mut report = Report::default();
+    if let Some(rules) = rules {
+        report.merge(&rules.report);
     }
+    let mut ids = Ids::seeded(text);
+    let mut nets = NetTable::read(&root);
+    let stack = Stack::read(&root, &mut report);
+    let physical_stack = stackup::read(&root, &stack, &mut report);
 
-    // Footprints
-    let footprints: Vec<Footprint> = root
-        .find_all("footprint")
-        .iter()
-        .map(|fp| parse_footprint_node(fp))
-        .collect();
-
-    // Trace segments
-    let segments: Vec<Segment> = root
-        .find_all("segment")
-        .iter()
-        .map(|s| {
-            let start = s
-                .find("start")
-                .map(|p| parse_point(p))
-                .unwrap_or(Point { x: 0.0, y: 0.0 });
-            let end = s
-                .find("end")
-                .map(|p| parse_point(p))
-                .unwrap_or(Point { x: 0.0, y: 0.0 });
-            let width = s
-                .find("width")
-                .and_then(|w| w.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_TRACE_WIDTH_MM);
-            let layer = s
-                .find("layer")
-                .and_then(|l| l.first_arg())
-                .unwrap_or("F.Cu")
-                .to_string();
-            let net: u32 = s
-                .find("net")
-                .and_then(|n| n.first_arg()?.parse().ok())
-                .unwrap_or(0);
-            Segment {
-                uuid: parse_uuid(s),
-                start,
-                end,
-                width,
-                layer,
-                net,
-            }
-        })
-        .collect();
-
-    // Vias
-    let vias: Vec<Via> = root
-        .find_all("via")
-        .iter()
-        .map(|v| {
-            let (pos, _) = parse_at(v);
-            let diameter = v
-                .find("size")
-                .and_then(|s| s.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_VIA_DIAMETER_MM);
-            let drill = v
-                .find("drill")
-                .and_then(|d| d.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_VIA_DRILL_MM);
-            let layers = if let Some(l) = v.find("layers") {
-                vec![
-                    l.arg(0).unwrap_or("F.Cu").to_string(),
-                    l.arg(1).unwrap_or("B.Cu").to_string(),
-                ]
-            } else {
-                vec!["F.Cu".to_string(), "B.Cu".to_string()]
-            };
-            let net: u32 = v
-                .find("net")
-                .and_then(|n| n.first_arg()?.parse().ok())
-                .unwrap_or(0);
-            let via_type = v
-                .find("type")
-                .and_then(|t| t.first_arg())
-                .unwrap_or("through");
-            Via {
-                uuid: parse_uuid(v),
-                position: pos,
-                diameter,
-                drill,
-                layers,
-                net,
-                via_type: parse_via_type(via_type),
-            }
-        })
-        .collect();
-
-    // Zones
-    let zones: Vec<Zone> = root
-        .find_all("zone")
-        .iter()
-        .map(|z| {
-            let net: u32 = z
-                .find("net")
-                .and_then(|n| n.first_arg()?.parse().ok())
-                .unwrap_or(0);
-            let net_name = z
-                .find("net_name")
-                .and_then(|n| n.first_arg())
-                .unwrap_or("")
-                .to_string();
-            let layer = z
-                .find("layer")
-                .and_then(|l| l.first_arg())
-                .unwrap_or("F.Cu")
-                .to_string();
-            let priority: u32 = z
-                .find("priority")
-                .and_then(|p| p.first_arg()?.parse().ok())
-                .unwrap_or(0);
-            let clearance = z
-                .find("clearance")
-                .and_then(|c| c.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_CLEARANCE_MM);
-            let min_thickness = z
-                .find("min_thickness")
-                .and_then(|m| m.first_arg()?.parse().ok())
-                .unwrap_or(PCB_ZONE_MIN_THICKNESS_MM);
-
-            // Outline polygon
-            let outline: Vec<Point> = if let Some(poly) = z.find("polygon") {
-                if let Some(pts) = poly.find("pts") {
-                    pts.find_all("xy")
-                        .iter()
-                        .map(|xy| parse_point(xy))
-                        .collect()
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![]
-            };
-
-            // Thermal -- under connect_pads node in KiCad format
-            let connect = z.find("connect_pads");
-            let thermal_relief = connect.and_then(|c| c.find("thermal_gap")).is_some();
-            let thermal_gap = connect
-                .and_then(|c| c.find("thermal_gap"))
-                .and_then(|t| t.first_arg()?.parse().ok())
-                .unwrap_or(PCB_THERMAL_GAP_MM);
-            let thermal_width = connect
-                .and_then(|c| c.find("thermal_bridge_width"))
-                .and_then(|t| t.first_arg()?.parse().ok())
-                .unwrap_or(PCB_THERMAL_BRIDGE_MM);
-
-            Zone {
-                uuid: parse_uuid(z),
-                net,
-                net_name,
-                layer,
-                outline,
-                priority,
-                fill_type: z
-                    .find("fill")
-                    .and_then(|f| f.find("type"))
-                    .and_then(|t| t.first_arg())
-                    .unwrap_or("solid")
-                    .to_string(),
-                thermal_relief,
-                thermal_gap,
-                thermal_width,
-                clearance,
-                min_thickness,
-            }
-        })
-        .collect();
-
-    // Board-level graphics
-    let mut board_graphics = Vec::new();
-    for g in root.find_all("gr_line") {
-        let layer = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        if layer == "Edge.Cuts" {
-            continue; // Already handled as outline
-        }
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .or_else(|| g.find("width").and_then(|w| w.first_arg()?.parse().ok()))
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let end = g.find("end").map(|e| parse_point(e));
-        board_graphics.push(BoardGraphic {
-            graphic_type: "line".to_string(),
-            layer,
-            width: w,
-            start,
-            end,
-            center: None,
-            radius: 0.0,
-            points: vec![],
-        });
-    }
-    for g in root.find_all("gr_rect") {
-        let layer = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .or_else(|| g.find("width").and_then(|w| w.first_arg()?.parse().ok()))
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let end = g.find("end").map(|e| parse_point(e));
-        // If on Edge.Cuts, also add to outline
-        if layer == "Edge.Cuts" {
-            if let (Some(s), Some(e)) = (&start, &end) {
-                if outline_points.is_empty() {
-                    outline_points.push(Point { x: s.x, y: s.y });
-                    outline_points.push(Point { x: e.x, y: s.y });
-                    outline_points.push(Point { x: e.x, y: e.y });
-                    outline_points.push(Point { x: s.x, y: e.y });
-                }
-            }
-        }
-        board_graphics.push(BoardGraphic {
-            graphic_type: "rect".to_string(),
-            layer,
-            width: w,
-            start,
-            end,
-            center: None,
-            radius: 0.0,
-            points: vec![],
-        });
-    }
-    for g in root.find_all("gr_circle") {
-        let layer = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .or_else(|| g.find("width").and_then(|w| w.first_arg()?.parse().ok()))
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let center = g.find("center").map(|c| parse_point(c));
-        let end = g.find("end").map(|e| parse_point(e));
-        let radius = if let (Some(c), Some(e)) = (&center, &end) {
-            ((e.x - c.x).powi(2) + (e.y - c.y).powi(2)).sqrt()
-        } else {
-            0.0
+    let footprints: Vec<_> = {
+        let mut cx = Context {
+            stack: &stack,
+            nets: &mut nets,
+            ids: &mut ids,
+            report: &mut report,
         };
-        board_graphics.push(BoardGraphic {
-            graphic_type: "circle".to_string(),
-            layer,
-            width: w,
-            start: None,
-            end: None,
-            center,
-            radius,
-            points: vec![],
-        });
-    }
-    for g in root.find_all("gr_arc") {
-        let layer = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .or_else(|| g.find("width").and_then(|w| w.first_arg()?.parse().ok()))
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let mid = g.find("mid").map(|m| parse_point(m));
-        let end = g.find("end").map(|e| parse_point(e));
-        // Store mid point in the points vec for the renderer
-        let mut pts = vec![];
-        if let Some(ref m) = mid {
-            pts.push(*m);
-        }
-        board_graphics.push(BoardGraphic {
-            graphic_type: "arc".to_string(),
-            layer,
-            width: w,
-            start,
-            end,
-            center: None,
-            radius: 0.0,
-            points: pts,
-        });
-    }
-
-    // Board-level texts
-    let texts: Vec<BoardText> = root
-        .find_all("gr_text")
-        .iter()
-        .map(|t| {
-            let text = t.first_arg().unwrap_or("").to_string();
-            let (pos, rot) = parse_at(t);
-            let layer = t
-                .find("layer")
-                .and_then(|l| l.first_arg())
-                .unwrap_or("F.SilkS")
-                .to_string();
-            let fs = t
-                .find("effects")
-                .and_then(|e| e.find("font"))
-                .and_then(|f| f.find("size"))
-                .and_then(|s| s.first_arg()?.parse().ok())
-                .unwrap_or(PCB_DEFAULT_TEXT_SIZE_MM);
-            BoardText {
-                uuid: parse_uuid(t),
-                text,
-                position: pos,
-                layer,
-                font_size: fs,
-                rotation: rot,
-            }
-        })
+        root.children()
+            .iter()
+            .filter(|n| matches!(n.keyword(), Some("footprint" | "module")))
+            .filter_map(|n| footprint::convert(n, &mut cx))
+            .collect()
+    };
+    let mut tracks = tracks(&root, &stack, &mut nets, &mut ids, &mut report);
+    let mut arcs = arcs(&root, &stack, &mut nets, &mut ids, &mut report);
+    let vias = vias(&root, &stack, &mut nets, &mut ids, &mut report);
+    let mut zones: Vec<_> = root
+        .find_all("zone")
+        .into_iter()
+        .flat_map(|z| zones::convert(z, &stack, &mut nets, &mut ids, &mut report))
         .collect();
+    zones.extend(footprint_zones(
+        &root,
+        &stack,
+        &mut nets,
+        &mut ids,
+        &mut report,
+    ));
+    let drawings = board_graphics::read(&root, &stack, &mut nets, &mut ids, &mut report);
+    zones.extend(drawings.solids);
+    tracks.extend(drawings.tracks);
+    arcs.extend(drawings.arcs);
+    let (ring, edge_graphics) = edge(&drawings.edge_pieces, drawings.edge_graphics, &mut report);
+    let mut graphics = drawings.graphics;
+    graphics.extend(edge_graphics);
 
     let thickness = root
         .find("general")
-        .and_then(|g| g.find("thickness"))
-        .and_then(|t| t.first_arg()?.parse().ok())
-        .unwrap_or(PCB_DEFAULT_THICKNESS_MM);
-
-    Ok(PcbBoard {
-        uuid,
-        version,
-        generator,
+        .and_then(|g| number_of(g, "thickness"))
+        .unwrap_or(1.6);
+    let classes = match rules {
+        Some(r) => r.classes.clone(),
+        None => board_classes(&root),
+    };
+    let board = Board {
+        uuid: ids.fresh(),
         thickness,
-        outline: outline_points,
-        layers,
-        setup,
-        nets,
+        layers: stack.layers.clone(),
+        physical_stack,
+        setup: rules.map_or_else(Setup::default, |r| r.setup),
+        nets: nets.nets(),
         footprints,
-        segments,
+        tracks,
+        arcs,
         vias,
         zones,
-        graphics: board_graphics,
-        texts,
+        outline: ring,
+        graphics,
+        texts: drawings.texts,
+        origin: origin_of(&root),
+    };
+    Ok(Converted {
+        board,
+        classes,
+        report,
     })
 }
 
-// ---------------------------------------------------------------------------
-// Footprint parsing
-// ---------------------------------------------------------------------------
-
-/// Parse a footprint from an S-expression node (reusable for both PCB and standalone .kicad_mod)
-fn parse_footprint_node(fp: &SExpr) -> Footprint {
-    let footprint_id = fp.first_arg().unwrap_or("").to_string();
-    let (pos, rot) = parse_at(fp);
-    let layer = fp
-        .find("layer")
-        .and_then(|l| l.first_arg())
-        .unwrap_or("F.Cu")
-        .to_string();
-    let locked = fp.find("locked").is_some();
-    let uuid = parse_uuid(fp);
-
-    let reference = fp
-        .find_all("property")
+/// The board's own origin: the auxiliary (drill and place) origin when the
+/// board sets one, else the grid origin; `None` when neither is set.
+fn origin_of(root: &SExpr) -> Option<Point> {
+    let setup = root.find("setup")?;
+    ["aux_axis_origin", "grid_origin"]
         .iter()
-        .find(|p| p.first_arg() == Some("Reference"))
-        .and_then(|p| p.arg(1))
-        .unwrap_or("?")
-        .to_string();
+        .filter_map(|key| point_of(setup, key))
+        .find(|p| p.x != 0.0 || p.y != 0.0)
+}
 
-    let value = fp
-        .find_all("property")
-        .iter()
-        .find(|p| p.first_arg() == Some("Value"))
-        .and_then(|p| p.arg(1))
-        .unwrap_or("")
-        .to_string();
-
-    let properties: Vec<PcbProperty> = fp
-        .find_all("property")
-        .iter()
-        .map(|prop| parse_pcb_property(prop))
+/// The outline ring and the edge drawings that are not part of it.
+fn edge(
+    pieces: &[EdgePiece],
+    graphics: Vec<BoardGraphic>,
+    report: &mut Report,
+) -> (Vec<Point>, Vec<BoardGraphic>) {
+    let outline = outline::build(pieces);
+    if outline.ring.is_empty() {
+        report.note("board edge does not close; no outline written");
+    }
+    let rest = graphics
+        .into_iter()
+        .zip(outline.used)
+        .filter(|(_, used)| !used)
+        .map(|(g, _)| g)
         .collect();
+    (outline.ring, rest)
+}
 
-    // Pads
-    let pads: Vec<Pad> = fp
-        .find_all("pad")
+/// The copper layer an item names, or `None` (reported) when it is not one.
+fn copper_layer(node: &SExpr, stack: &Stack, what: &str, report: &mut Report) -> Option<String> {
+    let name = node.find("layer").and_then(SExpr::first_arg).unwrap_or("");
+    match stack.token(name) {
+        Some(t) if is_copper(&t) => Some(t),
+        _ => {
+            report.note(format!("{what} on non-copper layer {name} dropped"));
+            None
+        }
+    }
+}
+
+/// The `(width w)` of a track or copper arc; `None` (reported) when it is
+/// missing or not a positive length.
+fn width_of(node: &SExpr, what: &str, report: &mut Report) -> Option<f64> {
+    match number_of(node, "width") {
+        Some(w) if w > 0.0 => Some(w),
+        _ => {
+            report.note(format!("{what} without a positive width dropped"));
+            None
+        }
+    }
+}
+
+/// Zones inside footprints (rule areas, mostly). The source stores their
+/// corners in board coordinates, so each becomes a board zone as it is;
+/// the footprint does not carry zones in the Signex board file.
+fn footprint_zones(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<Zone> {
+    let mut out = Vec::new();
+    for fp in root
+        .children()
         .iter()
-        .map(|p| {
-            let number = p.first_arg().unwrap_or("").to_string();
-            let pad_type = parse_pad_type(p.arg(1).unwrap_or("smd"));
-            let shape = parse_pad_shape(p.arg(2).unwrap_or("rect"));
-            let (pad_pos, _) = parse_at(p);
-            let size = if let Some(sz) = p.find("size") {
-                Point {
-                    x: sz
-                        .arg(0)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(PCB_DEFAULT_PAD_SIZE_MM),
-                    y: sz
-                        .arg(1)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(PCB_DEFAULT_PAD_SIZE_MM),
-                }
-            } else {
-                Point {
-                    x: PCB_DEFAULT_PAD_SIZE_MM,
-                    y: PCB_DEFAULT_PAD_SIZE_MM,
-                }
-            };
-            let drill = p.find("drill").map(|d| DrillDef {
-                diameter: d
-                    .first_arg()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(PCB_DEFAULT_VIA_DRILL_MM),
-                shape: String::new(),
-            });
-            let pad_layers: Vec<String> = if let Some(layers) = p.find("layers") {
-                layers
-                    .children()
-                    .iter()
-                    .filter_map(|s| {
-                        s.keyword().or_else(|| {
-                            if let SExpr::Atom(a) = s {
-                                Some(a.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                vec![layer.clone()]
-            };
-            let net = p.find("net").map(|n| PadNet {
-                number: n.first_arg().and_then(|s| s.parse().ok()).unwrap_or(0),
-                name: n.arg(1).unwrap_or("").to_string(),
-            });
-            let roundrect_ratio = p
-                .find("roundrect_rratio")
-                .and_then(|r| r.first_arg()?.parse().ok())
-                .unwrap_or(0.0);
+        .filter(|n| matches!(n.keyword(), Some("footprint" | "module")))
+    {
+        for zone in fp.find_all("zone") {
+            report.note("footprint zone written as a board zone");
+            out.extend(zones::convert(zone, stack, nets, ids, report));
+        }
+    }
+    out
+}
 
-            Pad {
-                uuid: parse_uuid(p),
-                number,
-                pad_type,
-                shape,
-                position: pad_pos,
-                size,
-                drill,
-                layers: pad_layers,
-                net,
-                roundrect_ratio,
-            }
+fn tracks(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<Track> {
+    let mut out = Vec::new();
+    for node in root.find_all("segment") {
+        let (Some(start), Some(end)) = (point_of(node, "start"), point_of(node, "end")) else {
+            report.note("track without its ends dropped");
+            continue;
+        };
+        let Some(layer) = copper_layer(node, stack, "track", report) else {
+            continue;
+        };
+        let Some(width) = width_of(node, "track", report) else {
+            continue;
+        };
+        out.push(Track {
+            uuid: ids.of(node, report),
+            net: nets.of(node),
+            layer,
+            width,
+            start,
+            end,
+        });
+    }
+    out
+}
+
+fn arcs(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<TrackArc> {
+    let mut out = Vec::new();
+    for node in root.find_all("arc") {
+        let (Some(start), Some(mid), Some(end)) = (
+            point_of(node, "start"),
+            point_of(node, "mid"),
+            point_of(node, "end"),
+        ) else {
+            report.note("copper arc without its three points dropped");
+            continue;
+        };
+        let Some(layer) = copper_layer(node, stack, "copper arc", report) else {
+            continue;
+        };
+        let Some(width) = width_of(node, "copper arc", report) else {
+            continue;
+        };
+        out.push(TrackArc {
+            uuid: ids.of(node, report),
+            net: nets.of(node),
+            layer,
+            width,
+            start,
+            mid,
+            end,
+        });
+    }
+    out
+}
+
+fn vias(
+    root: &SExpr,
+    stack: &Stack,
+    nets: &mut NetTable,
+    ids: &mut Ids,
+    report: &mut Report,
+) -> Vec<Via> {
+    let copper = stack.copper();
+    let outer = vec![
+        copper.first().cloned().unwrap_or_default(),
+        copper.last().cloned().unwrap_or_default(),
+    ];
+    let mut out = Vec::new();
+    for node in root.find_all("via") {
+        let flag = |f: &str| {
+            node.children()
+                .iter()
+                .any(|c| matches!(c, SExpr::Atom(Atom::Raw(a)) if a == f))
+        };
+        let via_type = if flag("micro") {
+            ViaType::Micro
+        } else if flag("blind") {
+            ViaType::Blind
+        } else {
+            ViaType::Through
+        };
+        let named: Vec<String> = node
+            .find("layers")
+            .map(|l| {
+                l.children()
+                    .iter()
+                    .filter_map(|c| match c {
+                        SExpr::Atom(a) => stack.token(a.as_str()).filter(|t| is_copper(t)),
+                        SExpr::List(_) => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let layers = if via_type == ViaType::Through || named.len() < 2 {
+            outer.clone()
+        } else {
+            named
+        };
+        let Some((position, _)) = at_of(node) else {
+            report.note("via without a readable position dropped");
+            continue;
+        };
+        let drill = number_of(node, "drill").unwrap_or(0.3);
+        let diameter = number_of(node, "size").unwrap_or(0.6);
+        if drill <= 0.0 || diameter <= 0.0 {
+            report.note("via without a positive drill and size dropped");
+            continue;
+        }
+        out.push(Via {
+            uuid: ids.of(node, report),
+            net: nets.of(node),
+            position,
+            drill,
+            diameter,
+            layers,
+            via_type,
+        });
+    }
+    out
+}
+
+/// Net classes kept in the board file itself (older files):
+/// `(net_class "<name>" "<description>" (clearance ..) (trace_width ..)
+/// (via_dia ..) (via_drill ..) (add_net "<net>") ..)`.
+fn board_classes(root: &SExpr) -> Vec<NetClass> {
+    let mut classes: Vec<NetClass> = root
+        .find_all("net_class")
+        .into_iter()
+        .filter_map(|node| {
+            let value = |key: &str| number_of(node, key).filter(|v| *v > 0.0).unwrap_or(0.0);
+            Some(NetClass {
+                name: node.first_arg()?.to_string(),
+                nets: node
+                    .find_all("add_net")
+                    .into_iter()
+                    .filter_map(SExpr::first_arg)
+                    .map(str::to_string)
+                    .collect(),
+                patterns: Vec::new(),
+                clearance: value("clearance"),
+                trace_width: value("trace_width"),
+                via_diameter: value("via_dia"),
+                via_drill: value("via_drill"),
+                diff_pair_gap: value("diff_pair_gap"),
+                diff_pair_width: value("diff_pair_width"),
+            })
         })
         .collect();
-
-    // Footprint graphics
-    let mut graphics = Vec::new();
-    for g in fp.find_all("fp_line") {
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let end = g.find("end").map(|e| parse_point(e));
-        graphics.push(FpGraphic {
-            graphic_type: "line".to_string(),
-            layer: gl,
-            width: w,
-            start,
-            end,
-            center: None,
-            mid: None,
-            radius: 0.0,
-            points: vec![],
-            text: String::new(),
-            font_size: 0.0,
-            position: None,
-            rotation: 0.0,
-            fill: String::new(),
-        });
+    if let Some(i) = classes.iter().position(|c| c.name == "Default") {
+        let mut default = classes.remove(i);
+        default.nets.clear();
+        default.patterns = vec!["*".to_string()];
+        classes.push(default);
     }
-    for g in fp.find_all("fp_circle") {
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let center = g.find("center").map(|c| parse_point(c));
-        let end = g.find("end").map(|e| parse_point(e));
-        let radius = if let (Some(c), Some(e)) = (&center, &end) {
-            ((e.x - c.x).powi(2) + (e.y - c.y).powi(2)).sqrt()
-        } else {
-            0.0
-        };
-        graphics.push(FpGraphic {
-            graphic_type: "circle".to_string(),
-            layer: gl,
-            width: w,
-            start: None,
-            end: None,
-            center,
-            mid: None,
-            radius,
-            points: vec![],
-            text: String::new(),
-            font_size: 0.0,
-            position: None,
-            rotation: 0.0,
-            fill: String::new(),
-        });
-    }
-    for g in fp.find_all("fp_text") {
-        let text_type = g.first_arg().unwrap_or("user");
-        let text_val = g.arg(1).unwrap_or("").to_string();
-        let (text_pos, text_rot) = parse_at(g);
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let fs = g
-            .find("effects")
-            .and_then(|e| e.find("font"))
-            .and_then(|f| f.find("size"))
-            .and_then(|s| s.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_TEXT_SIZE_MM);
-        let display_text = match text_type {
-            "reference" => "%R".to_string(),
-            "value" => "%V".to_string(),
-            _ => text_val,
-        };
-        graphics.push(FpGraphic {
-            graphic_type: "text".to_string(),
-            layer: gl,
-            width: PCB_DEFAULT_GRAPHIC_WIDTH_MM,
-            start: None,
-            end: None,
-            center: None,
-            mid: None,
-            radius: 0.0,
-            points: vec![],
-            text: display_text,
-            font_size: fs,
-            position: Some(text_pos),
-            rotation: text_rot,
-            fill: String::new(),
-        });
-    }
-    for g in fp.find_all("fp_arc") {
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let mid = g.find("mid").map(|m| parse_point(m));
-        let end = g.find("end").map(|e| parse_point(e));
-        graphics.push(FpGraphic {
-            graphic_type: "arc".to_string(),
-            layer: gl,
-            width: w,
-            start,
-            end,
-            center: None,
-            mid,
-            radius: 0.0,
-            points: vec![],
-            text: String::new(),
-            font_size: 0.0,
-            position: None,
-            rotation: 0.0,
-            fill: String::new(),
-        });
-    }
-    for g in fp.find_all("fp_poly") {
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let pts: Vec<Point> = if let Some(pts_node) = g.find("pts") {
-            pts_node
-                .find_all("xy")
-                .iter()
-                .map(|xy| parse_point(xy))
-                .collect()
-        } else {
-            vec![]
-        };
-        let fill = g
-            .find("fill")
-            .and_then(|f| f.first_arg())
-            .map(|f| if f == "none" { "" } else { f })
-            .unwrap_or("")
-            .to_string();
-        graphics.push(FpGraphic {
-            graphic_type: "poly".to_string(),
-            layer: gl,
-            width: w,
-            start: None,
-            end: None,
-            center: None,
-            mid: None,
-            radius: 0.0,
-            points: pts,
-            text: String::new(),
-            font_size: 0.0,
-            position: None,
-            rotation: 0.0,
-            fill,
-        });
-    }
-    for prop in fp.find_all("property") {
-        let prop_name = prop.first_arg().unwrap_or("");
-        let prop_val = prop.arg(1).unwrap_or("").to_string();
-        if let Some(_at) = prop.find("at") {
-            if let Some(layer_node) = prop.find("layer") {
-                let gl = layer_node.first_arg().unwrap_or("").to_string();
-                if gl.is_empty() {
-                    continue;
-                }
-                let (text_pos, text_rot) = parse_at(prop);
-                let fs = prop
-                    .find("effects")
-                    .and_then(|e| e.find("font"))
-                    .and_then(|f| f.find("size"))
-                    .and_then(|s| s.first_arg()?.parse().ok())
-                    .unwrap_or(PCB_DEFAULT_TEXT_SIZE_MM);
-                let hidden = prop.find("effects").and_then(|e| e.find("hide")).is_some();
-                if hidden {
-                    continue;
-                }
-                let display_text = match prop_name {
-                    "Reference" => "%R".to_string(),
-                    "Value" => "%V".to_string(),
-                    _ => prop_val,
-                };
-                graphics.push(FpGraphic {
-                    graphic_type: "text".to_string(),
-                    layer: gl,
-                    width: PCB_DEFAULT_GRAPHIC_WIDTH_MM,
-                    start: None,
-                    end: None,
-                    center: None,
-                    mid: None,
-                    radius: 0.0,
-                    points: vec![],
-                    text: display_text,
-                    font_size: fs,
-                    position: Some(text_pos),
-                    rotation: text_rot,
-                    fill: String::new(),
-                });
-            }
-        }
-    }
-    for g in fp.find_all("fp_rect") {
-        let gl = g
-            .find("layer")
-            .and_then(|l| l.first_arg())
-            .unwrap_or("")
-            .to_string();
-        let w = g
-            .find("stroke")
-            .and_then(|s| s.find("width"))
-            .and_then(|w| w.first_arg()?.parse().ok())
-            .unwrap_or(PCB_DEFAULT_GRAPHIC_WIDTH_MM);
-        let start = g.find("start").map(|s| parse_point(s));
-        let end = g.find("end").map(|e| parse_point(e));
-        let fill = g
-            .find("fill")
-            .and_then(|f| f.first_arg())
-            .map(|f| if f == "none" { "" } else { f })
-            .unwrap_or("")
-            .to_string();
-        graphics.push(FpGraphic {
-            graphic_type: "rect".to_string(),
-            layer: gl,
-            width: w,
-            start,
-            end,
-            center: None,
-            mid: None,
-            radius: 0.0,
-            points: vec![],
-            text: String::new(),
-            font_size: 0.0,
-            position: None,
-            rotation: 0.0,
-            fill,
-        });
-    }
-
-    Footprint {
-        uuid,
-        reference,
-        value,
-        footprint_id,
-        position: pos,
-        rotation: rot,
-        layer,
-        locked,
-        pads,
-        graphics,
-        properties,
-    }
-}
-
-/// Parse a `.kicad_pcb` file from a file path.
-pub fn parse_pcb_file(path: &Path) -> Result<PcbBoard, ParseError> {
-    let content = std::fs::read_to_string(path)?;
-    parse_pcb(&content)
-}
-
-/// Parse a standalone `.kicad_mod` footprint file.
-pub fn parse_footprint_file(content: &str) -> Result<Footprint, ParseError> {
-    let root = sexpr::parse(content)?;
-
-    if root.keyword() != Some("footprint") {
-        // Some older files might use "module"
-        if root.keyword() != Some("module") {
-            return Err(ParseError::InvalidSExpr(
-                "Not a KiCad footprint file".to_string(),
-            ));
-        }
-    }
-
-    Ok(parse_footprint_node(&root))
+    classes
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_footprint_property_metadata() {
-        let footprint = parse_footprint_file(
-            r#"(footprint "Resistor_SMD:R_0603"
-    (layer "F.Cu")
-    (at 10 20 90)
-    (uuid "00000000-0000-0000-0000-000000000010")
-    (property "Reference" "R1"
-        (at 0 -2 0)
-        (layer "F.SilkS")
-        (effects (font (size 1 1) (thickness 0.15)))
-    )
-    (property "Value" "10k"
-        (at 0 2 0)
-        (layer "F.Fab")
-        (effects (font (size 1 1) (thickness 0.15)))
-    )
-    (property "MPN" "RC0603FR-0710KL"
-        (at 1 3 180)
-        (layer "Cmts.User")
-        (hide yes)
-        (effects (font (size 1.2 1.2) (thickness 0.15)))
-    )
-)"#,
-        )
-        .unwrap();
-
-        assert_eq!(footprint.reference, "R1");
-        assert_eq!(footprint.value, "10k");
-        assert_eq!(footprint.properties.len(), 3);
-        let mpn = footprint
-            .properties
-            .iter()
-            .find(|property| property.key == "MPN")
-            .unwrap();
-        assert_eq!(mpn.value, "RC0603FR-0710KL");
-        assert_eq!(mpn.position, Some(Point { x: 1.0, y: 3.0 }));
-        assert_eq!(mpn.rotation, 180.0);
-        assert_eq!(mpn.layer.as_deref(), Some("Cmts.User"));
-        assert_eq!(mpn.font_size, Some(1.2));
-        assert!(mpn.hidden);
-    }
-}
+#[path = "pcb_tests.rs"]
+mod tests;

@@ -1,5 +1,10 @@
-/// S-expression tokenizer and tree parser for KiCad files.
-/// KiCad uses a Lisp-like format: (keyword arg1 "string arg" (nested ...))
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 alplab and contributors. See LICENSE.
+
+//! S-expression tokenizer and tree parser for KiCad files.
+//! KiCad uses a Lisp-like format: (keyword arg1 "string arg" (nested ...))
+
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]

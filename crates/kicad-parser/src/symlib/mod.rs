@@ -11,6 +11,7 @@
 mod model;
 mod parts;
 mod symbol;
+pub mod to_snx;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -234,3 +235,6 @@ fn finish(read: &mut SymbolLibRead, library: &str) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod to_snx_tests;

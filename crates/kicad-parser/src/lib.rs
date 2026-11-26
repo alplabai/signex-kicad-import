@@ -25,6 +25,7 @@ mod geometry;
 mod ids;
 pub mod items;
 mod layers;
+pub mod libids;
 pub mod message_codes;
 mod nets;
 mod outline;

@@ -95,6 +95,12 @@ impl Item {
         }
     }
 
+    /// The Signex id written for the item.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_string());
+        self
+    }
+
     pub fn with_detail(mut self, detail: Value) -> Self {
         self.detail = detail;
         self

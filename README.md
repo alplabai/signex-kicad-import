@@ -16,6 +16,7 @@ independently from [Signex](https://github.com/alplabai/signex).
 signex-kicad-import path/to/board.kicad_pcb            # writes board.snxpcb + board.snxprj
 signex-kicad-import path/to/project.kicad_pro -o out/  # every .kicad_pcb in the project folder
 signex-kicad-import --json --force board.kicad_pcb     # JSON summary, replace existing output
+signex-kicad-import Device.kicad_sym -o out/                   # one symbol library, written as Device.snxsym
 ```
 
 Existing output files are not replaced unless `--force` is given. Every
@@ -28,6 +29,9 @@ The summary lists what could not be carried over exactly (by kind and
 count) and a self-check: how many track ends land on a pad of their own
 net, and how many only on another net's pad, once Signex places the pads.
 
+A `.kicad_sym` given without a subcommand is converted to one `<name>.snxsym`
+(derived symbols, `extends`, are written as symbols of their own; what could not
+be carried over is listed in the summary by message and count, like a board).
 Schematic conversion is not part of this release.
 
 For Signex's library converter contract, `signex-kicad-import describe --json`

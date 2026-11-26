@@ -7,7 +7,7 @@
   repository is not, which is why the library-format fixtures are read through
   `SIGNEX_FORMAT_FIXTURES` and not copied. Refresh the copy when the contract's
   minor version moves.
-- `legacy-help.txt`, `legacy-v7-summary.json`: the board conversion's `--help`
+- `legacy-help.txt`, `legacy-v7-summary.json` (the help text was regenerated when `.kicad_sym` input was added; the board summary is unchanged): the board conversion's `--help`
   and `--json` output, captured from this repository's last commit before the
   `describe` / `library` subcommands (696d6b2). `<OUT>` stands for the output
   directory. They pin that the command without a subcommand did not change.

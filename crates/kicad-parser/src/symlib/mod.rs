@@ -32,6 +32,41 @@ pub struct SymbolLibRead {
     pub items: Vec<Item>,
 }
 
+/// A copy of `lib` in which every derived symbol (`extends`) holds the units
+/// of its nearest ancestor that draws and no `extends`, so it stands alone, as
+/// a symbol file of its own needs. A symbol whose chain breaks is left out.
+pub fn flatten_derived(lib: &SymbolLib) -> SymbolLib {
+    let mut out = lib.clone();
+    out.symbols = lib
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            let mut s = s.clone();
+            if s.extends.is_some() {
+                s.units = lib.effective_units(&s)?.to_vec();
+                s.power = s.power || is_power_chain(lib, &s);
+                s.extends = None;
+            }
+            Some(s)
+        })
+        .collect();
+    out
+}
+
+fn is_power_chain(lib: &SymbolLib, s: &Symbol) -> bool {
+    let mut cur = s;
+    for _ in 0..=lib.symbols.len() {
+        if cur.power {
+            return true;
+        }
+        match cur.extends.as_deref().and_then(|p| lib.symbol(p)) {
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
+    false
+}
+
 /// Read the text of a `.kicad_sym`. `library` names it in report items (the
 /// file stem). An unreadable file is an error; an unreadable symbol or an
 /// unknown token is a report item.

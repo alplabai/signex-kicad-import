@@ -80,6 +80,20 @@ these (`detail` carries `what` for the variable part, and `count`).
 | `item.width_missing` | dropped | {x} without a positive width dropped |
 | `copper_item.layer_not_copper` | dropped | `{what} on non-copper layer {name} dropped` |
 
+## Library conversion
+
+The codes of the `library` command and of a single `.kicad_sym` conversion are
+listed where they arise: `KICAD_SYMBOL_FORMAT.md` (the reader: `symlib.*`,
+`symbol.*`), and the tables at the end of `LIBRARY_MAPPING.md` (the mapping:
+`symbol.*`, `footprint.*`, `pad.*`, `model.*`, `part.*`, `library.*`,
+`update.*`). Items carry `kind`, `source`, `id`, `code`, `severity`, `message`
+and `detail` (contract section 4); a single `.kicad_sym` reports the non-`info`
+items by message and count in the summary's `warnings`.
+
+Codes that cite a Signex limitation name its issue: `pad.slot_not_placeable`
+(signex #3128, slotted drills cannot be placed on boards) and
+`footprint.graphic_layer_dropped` (signex #3133, no such footprint layer yet).
+
 ## Symbol library reader
 
 See `KICAD_SYMBOL_FORMAT.md` (codes `symlib.*` and `symbol.*`).

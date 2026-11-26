@@ -34,10 +34,11 @@ use serde_json::{Value, json};
 #[command(
     name = "signex-kicad-import",
     version,
-    about = "Convert KiCad boards (.kicad_pcb or .kicad_pro) to Signex native files"
+    about = "Convert KiCad boards (.kicad_pcb or .kicad_pro) and symbol libraries (.kicad_sym) to Signex native files"
 )]
 struct Cli {
-    /// A .kicad_pcb, or a .kicad_pro whose folder holds the boards.
+    /// A .kicad_pcb, a .kicad_pro whose folder holds the boards, or a
+    /// .kicad_sym symbol library (written as one .snxsym).
     input: PathBuf,
 
     /// Output directory. Defaults to the input file's directory.
@@ -55,6 +56,8 @@ struct Cli {
 
 #[derive(Default)]
 struct Outcome {
+    /// A symbol file was converted: there are no track ends to tally.
+    symbols: bool,
     files: Vec<PathBuf>,
     report: Report,
     ends: EndTally,
@@ -102,18 +105,21 @@ fn summary(result: &Result<Outcome>) -> Value {
                 .entries()
                 .map(|(message, count)| json!({ "message": message, "count": count }))
                 .collect();
-            json!({
+            let mut summary = json!({
                 "ok": true,
                 "error": null,
                 "converter": converter_name(),
                 "files": files,
                 "warnings": warnings,
-                "track_ends": {
+            });
+            if !outcome.symbols {
+                summary["track_ends"] = json!({
                     "total": outcome.ends.total,
                     "on_own_net_pad": outcome.ends.own_net,
                     "on_other_net_pad": outcome.ends.other_net,
-                },
-            })
+                });
+            }
+            summary
         }
         Err(e) => json!({
             "ok": false,
@@ -132,10 +138,12 @@ fn print_outcome(outcome: &Outcome) {
     for (message, count) in outcome.report.entries() {
         println!("warning: {count} x {message}");
     }
-    println!(
-        "track ends: {} total, {} on a pad of their net, {} on another net's pad",
-        outcome.ends.total, outcome.ends.own_net, outcome.ends.other_net
-    );
+    if !outcome.symbols {
+        println!(
+            "track ends: {} total, {} on a pad of their net, {} on another net's pad",
+            outcome.ends.total, outcome.ends.own_net, outcome.ends.other_net
+        );
+    }
 }
 
 /// One board ready to write: both files' paths and text.
@@ -157,11 +165,14 @@ fn run(cli: &Cli) -> Result<Outcome> {
     let (boards, project_file) = match ext.as_str() {
         "kicad_pcb" => (vec![input.clone()], None),
         "kicad_pro" => (boards_beside(&input)?, Some(input.clone())),
-        "kicad_sch" | "kicad_sym" => bail!(
-            "schematic and symbol conversion is not part of this release; \
-             convert the board (.kicad_pcb or .kicad_pro)"
+        "kicad_sym" => return convert_symbol_file(cli, &input),
+        "kicad_sch" => bail!(
+            "schematic conversion is not part of this release; \
+             convert the board (.kicad_pcb or .kicad_pro) or a symbol library (.kicad_sym)"
         ),
-        other => bail!("unsupported input .{other}: expected .kicad_pcb or .kicad_pro"),
+        other => bail!(
+            "unsupported input .{other}: expected .kicad_pcb, .kicad_pro or .kicad_sym"
+        ),
     };
     let out_dir = match &cli.output {
         Some(dir) => {
@@ -229,6 +240,61 @@ fn run(cli: &Cli) -> Result<Outcome> {
         outcome.files.push(board.pcb.0);
         outcome.files.push(board.project.0);
     }
+    Ok(outcome)
+}
+
+/// A `.kicad_sym` as `<stem>.snxsym` (no board, no project file). Derived
+/// symbols (`extends`) are written as symbols of their own; what could not be
+/// carried over is reported by message and count, as for a board.
+fn convert_symbol_file(cli: &Cli, input: &Path) -> Result<Outcome> {
+    use kicad_parser::libids::{item_id, library_id};
+    use kicad_parser::symlib::{flatten_derived, read_symbol_file, to_snx::to_symbol_file};
+
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .with_context(|| format!("no usable file name: {}", input.display()))?
+        .to_string();
+    let read = read_symbol_file(input).with_context(|| format!("reading {}", input.display()))?;
+    let name = input.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let id = library_id(&stem, &[name]);
+    let mut items = read.items.clone();
+    let lib = flatten_derived(&read.lib);
+    let file = to_symbol_file(
+        &lib,
+        &stem,
+        item_id(id, "symbol-file", &stem, &stem).to_string(),
+        &|symbol| item_id(id, "symbol", &stem, symbol).to_string(),
+        &mut items,
+    );
+    let out_dir = match &cli.output {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("creating output directory {}", dir.display()))?;
+            dir.clone()
+        }
+        None => input.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
+    };
+    let path = out_dir.join(format!("{stem}.snxsym"));
+    if path.exists() && !cli.force {
+        bail!("{} exists; pass --force to replace it", path.display());
+    }
+    let text = snx_writer::write_symbol_file(&file);
+    write_temp(&path, &text)?;
+    std::fs::rename(temp_path(&path), &path)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    sync_dir(&path)?;
+    let mut outcome = Outcome {
+        symbols: true,
+        ..Outcome::default()
+    };
+    for item in items.iter().filter(|i| i.severity != kicad_parser::Severity::Info) {
+        let count = item.detail.get("count").and_then(serde_json::Value::as_u64).unwrap_or(1);
+        for _ in 0..count {
+            outcome.report.note(item.message.clone());
+        }
+    }
+    outcome.files.push(path);
     Ok(outcome)
 }
 

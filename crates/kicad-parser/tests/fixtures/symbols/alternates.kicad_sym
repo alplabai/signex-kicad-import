@@ -1,0 +1,19 @@
+(kicad_symbol_lib (version 20231120) (generator "handwritten")
+  (symbol "MCU_Alt"
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "MCU_Alt" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "MCU_Alt_1_1"
+      (pin bidirectional line (at -7.62 0 0) (length 2.54)
+        (name "PA0" (effects (font (size 1.27 1.27))))
+        (number "10" (effects (font (size 1.27 1.27))))
+        (alternate "ADC0" input line)
+        (alternate "TIM2_CH1" bidirectional clock)
+        (alternate "UART_TX" output inverted))
+      (pin passive line (at 7.62 0 180) (length 2.54) hide
+        (name "NC" (effects (font (size 1.27 1.27))))
+        (number "11" (effects (font (size 1.27 1.27)))))
+      (pin no_connect line (at 7.62 2.54 180) (length 2.54) (hide yes)
+        (name "NC2" (effects (font (size 1.27 1.27))))
+        (number "12" (effects (font (size 1.27 1.27))))))))

@@ -40,8 +40,9 @@ Inputs are classified by name and shape: `*.kicad_sym` (file),
 `fp-lib-table` (files).
 
 Current state: the read phase runs (every input is hashed into the report's
-`sources`; the symbol reader of the next unit fills the symbol counts and
-items), the report is written into `--output`, and the run then exits 1 with
+`sources`; symbol libraries are read by `kicad_parser::symlib`, which fills
+`counts.source.symbols` and the report items, see `KICAD_SYMBOL_FORMAT.md`;
+an input that does not parse is an `error` item, not a failed run), the report is written into `--output`, and the run then exits 1 with
 `error: "library output not implemented yet"`. The Signex writers land in later
 units; the id check of `--update` comes with them.
 

@@ -79,3 +79,7 @@ these (`detail` carries `what` for the variable part, and `count`).
 | `layer.unmapped` | dropped | layer {x} has no Signex layer; its items are dropped |
 | `item.width_missing` | dropped | {x} without a positive width dropped |
 | `copper_item.layer_not_copper` | dropped | `{what} on non-copper layer {name} dropped` |
+
+## Symbol library reader
+
+See `KICAD_SYMBOL_FORMAT.md` (codes `symlib.*` and `symbol.*`).

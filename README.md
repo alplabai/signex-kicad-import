@@ -33,7 +33,8 @@ Schematic conversion is not part of this release.
 For Signex's library converter contract, `signex-kicad-import describe --json`
 and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
 libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
-`library` command does not write a library yet.
+`library` command reads symbol libraries (`docs/KICAD_SYMBOL_FORMAT.md`) but
+does not write a library yet.
 
 ## What the board conversion covers
 

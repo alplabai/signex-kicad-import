@@ -36,6 +36,7 @@ mod report;
 mod ring;
 pub mod sexpr;
 mod stackup;
+pub mod symlib;
 mod zones;
 
 pub use error::ParseError;

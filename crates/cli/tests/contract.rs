@@ -265,3 +265,79 @@ fn a_usage_error_without_json_prints_to_stderr_only() {
     assert!(out.stdout.is_empty());
     assert!(!out.stderr.is_empty());
 }
+
+fn parser_fixture(name: &str) -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../kicad-parser/tests/fixtures/symbols")
+        .join(name)
+        .display()
+        .to_string()
+}
+
+fn report_of(out_dir: &std::path::Path) -> Value {
+    let text = std::fs::read_to_string(out_dir.join("import-report.json")).expect("report");
+    serde_json::from_str(&text).expect("JSON")
+}
+
+#[test]
+fn symbol_inputs_fill_the_source_counts_and_items() {
+    let dir = scratch("lib-symbols");
+    let out_dir = dir.join("out");
+    let out = run(&[
+        "library",
+        &parser_fixture("multiunit.kicad_sym"),
+        &parser_fixture("unknown.kicad_sym"),
+        &parser_fixture("Parts.kicad_symdir"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let report = report_of(&out_dir);
+    let errors = validate(&schema(), "#/$defs/report", &report);
+    assert!(errors.is_empty(), "{errors:#?}");
+    // 1 + 2 + 3 symbols in the three inputs.
+    assert_eq!(report["counts"]["source"]["symbols"], 6);
+    assert_eq!(report["sources"].as_array().expect("sources").len(), 3);
+    let codes: Vec<&str> = report["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"symbol.pin_unreadable"), "{codes:?}");
+    assert!(codes.contains(&"symlib.file_unreadable"), "{codes:?}");
+    // The summary counts warnings from the dropped / error items.
+    let summary: Value = serde_json::from_slice(&out.stdout).expect("summary");
+    assert!(summary["warnings"].as_array().expect("warnings").len() >= 2);
+    // `skipped` counts source items not written; an unreadable file is a
+    // library item (its symbols are unknown), so none here.
+    assert_eq!(summary["counts"]["skipped"], 0);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn an_unreadable_symbol_file_is_an_item_not_a_failed_run() {
+    let dir = scratch("lib-broken");
+    let sym = dir.join("Cut.kicad_sym");
+    std::fs::write(&sym, "(kicad_symbol_lib (symbol \"A\"").expect("sym");
+    let out_dir = dir.join("out");
+    let out = run(&[
+        "library",
+        sym.to_str().expect("utf8"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--json",
+    ]);
+    // Still the unimplemented-writer failure, with the read problem reported.
+    assert_eq!(
+        stdout_lines(&out)[0]["error"],
+        "library output not implemented yet"
+    );
+    let report = report_of(&out_dir);
+    assert_eq!(report["items"][0]["code"], "symlib.unreadable");
+    assert_eq!(report["items"][0]["severity"], "error");
+    assert_eq!(report["items"][0]["kind"], "library");
+    assert_eq!(report["counts"]["source"]["symbols"], 0);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

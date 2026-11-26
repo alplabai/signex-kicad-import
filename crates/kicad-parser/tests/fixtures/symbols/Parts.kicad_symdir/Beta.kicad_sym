@@ -1,0 +1,5 @@
+(kicad_symbol_lib (version 20250101) (generator "handwritten")
+  (symbol "Beta"
+    (extends "Alpha")
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Beta" (at 0 0 0) (effects (font (size 1.27 1.27))))))

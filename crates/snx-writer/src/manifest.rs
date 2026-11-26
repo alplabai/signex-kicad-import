@@ -68,6 +68,10 @@ pub fn write_manifest(
     let mut o = String::new();
     o.push_str("format = \"snxlib/2\"\n");
     let _ = writeln!(o, "library_id = {}", toml_string(library_id));
+    // With no `[[classes]]` the format writes this root key on line 3.
+    if classes.is_empty() {
+        o.push_str("classes = []\n");
+    }
     o.push_str("\n[library]\n");
     let _ = writeln!(o, "name = {}", toml_string(name));
     for (key, value) in [

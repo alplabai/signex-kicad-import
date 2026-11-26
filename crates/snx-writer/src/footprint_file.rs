@@ -245,9 +245,11 @@ pub fn write_footprint_file(file: &FootprintFile) -> String {
     if let Some(h) = f.height_mm {
         let _ = writeln!(o, "height_mm = {}", toml_float(h));
     }
-    if let Some(points) = &f.courtyard {
-        o.push_str("\n[footprints.courtyard]\n");
-        o.push_str(&point_array("points", points));
+    // Always written, empty or not (library format 4.1).
+    o.push_str("\n[footprints.courtyard]\n");
+    match &f.courtyard {
+        Some(points) if !points.is_empty() => o.push_str(&point_array("points", points)),
+        _ => o.push_str("points = []\n"),
     }
     for (key, list) in lists {
         for g in list {

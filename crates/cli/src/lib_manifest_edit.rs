@@ -379,6 +379,16 @@ pub fn edit_manifest(old: &str, e: &Edit<'_>) -> Result<(String, Vec<String>), S
     {
         parts.insert(at + n, Part::Plain(class_block(c)));
     }
+    // `classes = []` and `[[classes]]` tables cannot stand together.
+    if !e.classes.iter().all(|c| have.contains(&c.key)) || !have.is_empty() {
+        for p in &mut parts {
+            if let Part::Plain(b) = p
+                && b.header.is_empty()
+            {
+                b.lines.retain(|l| l.trim() != "classes = []");
+            }
+        }
+    }
     let flat: Vec<Block> = parts
         .into_iter()
         .flat_map(|p| match p {

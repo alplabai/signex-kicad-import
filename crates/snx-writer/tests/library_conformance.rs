@@ -347,6 +347,8 @@ fn the_manifest_head_matches_the_fixture_byte_for_byte() {
         &[],
         &[],
     );
+    // The fixture has classes; with none the writer adds the root key `classes = []`.
+    let got = got.replacen("classes = []\n", "", 1);
     assert_eq!(got.trim_end_matches('\n'), head.trim_end_matches('\n'));
 }
 
@@ -628,4 +630,37 @@ fn an_embedded_model_inflates_to_the_fixtures_step_file() {
         ..file
     };
     assert!(write_footprint_file(&plain).starts_with("format = \"snxfpt/1.1\"\n"));
+}
+
+#[test]
+fn an_empty_courtyard_is_written_and_a_library_without_classes_has_the_root_key() {
+    let f = footprint("01940000-0000-7000-8000-000000000021", "E", "", "");
+    assert!(f.courtyard.is_none());
+    let file = FootprintFile {
+        file_uuid: "01940000-0000-7000-8000-000000000031".into(),
+        display_name: "E".into(),
+        created: CREATED.into(),
+        updated: UPDATED.into(),
+        footprint: f,
+        models: vec![],
+    };
+    let text = write_footprint_file(&file);
+    assert!(
+        text.contains("\n[footprints.courtyard]\npoints = []\n\n[footprints.body_3d]\n"),
+        "{text}"
+    );
+    toml::from_str::<toml::Value>(&text).expect("valid TOML");
+    // A non-empty one is as before (the fixtures compare byte for byte above).
+    let m = write_manifest("01940000-0000-7000-8000-000000000001", "N", &Default::default(), &[], &[]);
+    let lines: Vec<&str> = m.lines().collect();
+    assert_eq!(lines[2], "classes = []");
+    toml::from_str::<toml::Value>(&m).expect("valid TOML");
+    let with = write_manifest(
+        "01940000-0000-7000-8000-000000000001",
+        "N",
+        &Default::default(),
+        &[snx_writer::part_table::Class { key: "k".into(), label: "K".into() }],
+        &[],
+    );
+    assert!(!with.contains("classes = []") && with.contains("[[classes]]"));
 }

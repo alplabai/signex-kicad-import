@@ -59,10 +59,7 @@ impl Staging {
     /// Stage `bytes` as `rel` (a path relative to the library root).
     pub fn write(&mut self, rel: &str, bytes: &[u8]) -> Result<()> {
         let path = self.dir.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
+        create_parents_checked(&self.dir, Path::new(rel))?;
         std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
         self.files.push(PathBuf::from(rel));
         Ok(())
@@ -84,10 +81,10 @@ impl Staging {
             }
             for rel in &saved {
                 let target = self.out.join(rel);
-                if let Some(parent) = target.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                if create_parents_checked(&self.out, rel).is_ok() && no_links_below(&self.out, rel)
+                {
+                    let _ = std::fs::rename(backup.join(rel), target);
                 }
-                let _ = std::fs::rename(backup.join(rel), target);
             }
         }
         result.map(|()| placed)
@@ -100,6 +97,8 @@ impl Staging {
         placed: &mut Vec<PathBuf>,
         saved: &mut Vec<PathBuf>,
     ) -> Result<()> {
+        std::fs::create_dir_all(backup)
+            .with_context(|| format!("creating {}", backup.display()))?;
         let save = |rel: &Path, saved: &mut Vec<PathBuf>| -> Result<()> {
             if !plain_relative(rel) {
                 anyhow::bail!("refusing the path {}", rel.display());
@@ -114,9 +113,7 @@ impl Staging {
                 _ => return Ok(()),
             }
             let to = backup.join(rel);
-            if let Some(parent) = to.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            create_parents_checked(backup, rel)?;
             // Written before the move, so a crash can always find what was moved.
             {
                 use std::io::Write as _;
@@ -138,10 +135,7 @@ impl Staging {
         for rel in &self.files {
             save(rel, saved)?;
             let target = self.out.join(rel);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
+            create_parents_checked(&self.out, rel)?;
             if !no_links_below(&self.out, rel) {
                 anyhow::bail!("{} lies behind a link; not written", target.display());
             }
@@ -163,24 +157,39 @@ fn plain_relative(rel: &Path) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
-/// The user id this process runs as, found without a system call crate: a
-/// file just created is owned by it. `None` when it cannot be told, which the
-/// callers treat as "not ours".
+/// The user id this process runs as (`None` off unix, where nothing is "ours").
 #[cfg(unix)]
 pub fn current_uid() -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    let marker = std::env::temp_dir().join(format!(".snx-uid-{}", std::process::id()));
-    let uid = std::fs::File::create(&marker)
-        .and_then(|f| f.metadata())
-        .map(|m| m.uid())
-        .ok();
-    let _ = std::fs::remove_file(&marker);
-    uid
+    Some(rustix::process::geteuid().as_raw())
 }
 
 #[cfg(not(unix))]
 pub fn current_uid() -> Option<u32> {
     None
+}
+
+/// Create the folders of `rel`'s parent below `base` one at a time, refusing
+/// any component that exists as a link or as something other than a folder.
+fn create_parents_checked(base: &Path, rel: &Path) -> Result<()> {
+    let mut cur = base.to_path_buf();
+    let Some(parent) = rel.parent() else {
+        return Ok(());
+    };
+    for c in parent.components() {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => anyhow::bail!(
+                "{} is a link or not a folder; refusing to write below it",
+                cur.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&cur).with_context(|| format!("creating {}", cur.display()))?;
+            }
+            Err(e) => return Err(e).with_context(|| format!("checking {}", cur.display())),
+        }
+    }
+    Ok(())
 }
 
 /// Whether `meta` is a folder of the user `uid`. Fails closed: without a
@@ -231,8 +240,8 @@ fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
             continue;
         }
         let target = out.join(rel);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+        if create_parents_checked(out, rel).is_err() {
+            continue;
         }
         if !no_links_below(out, rel) {
             continue;
@@ -426,6 +435,26 @@ mod tests {
             std::fs::read(base.join("elsewhere/a.snxsym")).expect("f"),
             b"victim"
         );
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parents_are_created_one_at_a_time_and_a_link_among_them_is_refused() {
+        let base = tmp("parents");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::create_dir_all(base.join("elsewhere")).expect("d");
+        std::os::unix::fs::symlink(base.join("elsewhere"), out.join("a")).expect("link");
+        assert!(create_parents_checked(&out, Path::new("a/b/c.snxsym")).is_err());
+        assert!(
+            !base.join("elsewhere/b").exists(),
+            "nothing created behind the link"
+        );
+        std::fs::write(out.join("file"), "x").expect("f");
+        assert!(create_parents_checked(&out, Path::new("file/x.snxsym")).is_err());
+        create_parents_checked(&out, Path::new("n/m/o.snxsym")).expect("plain folders");
+        assert!(out.join("n/m").is_dir());
         std::fs::remove_dir_all(&base).expect("cleanup");
     }
 }

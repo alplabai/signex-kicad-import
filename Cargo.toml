@@ -26,6 +26,9 @@ clap = { version = "4", features = ["derive"] }
 # Source hashes in the library report
 sha2 = "0.10"
 
+# Owner and no-follow opens on unix
+rustix = { version = "1", features = ["process", "fs"] }
+
 # Embedded 3D models: raw deflate and base64
 flate2 = "1"
 base64 = "0.22"

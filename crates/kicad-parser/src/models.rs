@@ -235,28 +235,27 @@ fn load(
         items.push(item("model.path_refused", Severity::Dropped, format!("3D model {uri} is outside the folders it may be read from; not read (give --models-dir)"), uri));
         return None;
     }
-    let len = std::fs::symlink_metadata(&path).ok()?.len();
-    if len > MAX_MODEL_BYTES as u64 {
-        items.push(item(
-            "model.too_large",
-            Severity::Dropped,
-            format!("3D model {uri} is larger than 256 MiB; not embedded"),
-            uri,
-        ));
-        return None;
-    }
-    let mut bytes = Vec::new();
-    let read = std::fs::File::open(&path)
-        .and_then(|f| f.take(MAX_MODEL_BYTES as u64 + 1).read_to_end(&mut bytes));
-    if read.is_err() || bytes.len() > MAX_MODEL_BYTES {
-        items.push(item(
-            "model.unreadable",
-            Severity::Dropped,
-            format!("3D model {uri} could not be read; not embedded"),
-            uri,
-        ));
-        return None;
-    }
+    let bytes = match read_regular(&path, &canonical) {
+        Ok(b) => b,
+        Err(Refused::TooLarge) => {
+            items.push(item(
+                "model.too_large",
+                Severity::Dropped,
+                format!("3D model {uri} is larger than 256 MiB; not embedded"),
+                uri,
+            ));
+            return None;
+        }
+        Err(Refused::Unreadable) => {
+            items.push(item(
+                "model.unreadable",
+                Severity::Dropped,
+                format!("3D model {uri} could not be read; not embedded"),
+                uri,
+            ));
+            return None;
+        }
+    };
     if substituted {
         items.push(item(
             "model.step_substituted",
@@ -314,4 +313,72 @@ fn load(
             bytes: bytes.into(),
         },
     ))
+}
+
+enum Refused {
+    TooLarge,
+    Unreadable,
+}
+
+/// Open `path` without following a link, check the handle (a regular file,
+/// within the size cap, the very file `canonical` names: same device and
+/// inode), and read at most the cap plus one byte. Opening first and checking
+/// the handle leaves no gap between the check and the read for a swap.
+fn read_regular(path: &Path, canonical: &Path) -> Result<Vec<u8>, Refused> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let file = opts.open(path).map_err(|_| Refused::Unreadable)?;
+    let meta = file.metadata().map_err(|_| Refused::Unreadable)?;
+    if !meta.is_file() {
+        return Err(Refused::Unreadable);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let at = std::fs::metadata(canonical).map_err(|_| Refused::Unreadable)?;
+        if (meta.dev(), meta.ino()) != (at.dev(), at.ino()) {
+            return Err(Refused::Unreadable);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = canonical;
+    if meta.len() > MAX_MODEL_BYTES as u64 {
+        return Err(Refused::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_MODEL_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Refused::Unreadable)?;
+    if bytes.len() > MAX_MODEL_BYTES {
+        return Err(Refused::TooLarge);
+    }
+    Ok(bytes)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_link_is_not_opened_and_a_swapped_file_is_not_the_checked_one() {
+        let dir = std::env::temp_dir().join(format!("snx-model-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("d");
+        std::fs::write(dir.join("a.step"), "a").expect("f");
+        std::fs::write(dir.join("b.step"), "b").expect("f");
+        std::os::unix::fs::symlink(dir.join("a.step"), dir.join("link.step")).expect("l");
+        assert!(read_regular(&dir.join("a.step"), &dir.join("a.step")).is_ok_and(|b| b == b"a"));
+        // The path is a link: refused at open.
+        assert!(read_regular(&dir.join("link.step"), &dir.join("a.step")).is_err());
+        // The handle is not the file the canonical path names.
+        assert!(read_regular(&dir.join("b.step"), &dir.join("a.step")).is_err());
+        // A folder is not a model.
+        assert!(read_regular(&dir, &dir).is_err());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
 }

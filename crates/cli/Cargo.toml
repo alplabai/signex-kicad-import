@@ -21,5 +21,8 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 regex = { workspace = true }

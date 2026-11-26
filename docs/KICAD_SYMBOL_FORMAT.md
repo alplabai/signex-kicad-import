@@ -36,6 +36,9 @@ reader converts nothing.
 
 ## What is read
 
+v10 files also carry `in_pos_files`, `duplicate_pin_numbers_are_jumpers` and `body_styles` in a symbol; they are known tokens (no `symbol.token_unknown`). Only `duplicate_pin_numbers_are_jumpers yes` is reported (`symbol.jumper_pins_not_carried`).
+
+
 Symbols with `extends`, units (`NAME_U_S`; unit 0 common; style 1 and 2,
 other styles kept and reported as `info`), pins (electrical type, style,
 position, angle, length, name, number, hidden flags, alternates), the six graphic

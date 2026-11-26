@@ -41,8 +41,6 @@ pub fn describe() -> Value {
     })
 }
 
-// `Ok` and `Partial` are produced once the library writers exist.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Ok,
@@ -67,7 +65,6 @@ impl Exit {
         }
     }
 
-    #[allow(dead_code)]
     /// A finished run is `partial` when any item was dropped or not written.
     pub fn of_items(items: &[Item]) -> Exit {
         if items.iter().any(|i| i.severity.is_loss()) {

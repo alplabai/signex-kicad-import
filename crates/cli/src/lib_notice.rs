@@ -56,12 +56,15 @@ pub fn notice(
     source: Option<&str>,
     inputs: &[(String, String)],
     libraries: &[String],
+    contents: &str,
 ) -> String {
     let mut o = String::from("# Notice\n\n");
     o.push_str(
         "This library is a format conversion of KiCad libraries into the Signex library format. ",
     );
-    o.push_str("The symbols, footprints and 3D models are the upstream libraries' data; nothing was redrawn.\n\n");
+    o.push_str(&format!(
+        "It holds {contents}, taken from the upstream libraries; nothing was redrawn.\n\n"
+    ));
     o.push_str(&format!("- Converted by: {}\n", converter()));
     o.push_str(&format!(
         "- Source: {}\n",
@@ -114,13 +117,16 @@ mod tests {
             Some("https://x/y@9.0.0"),
             &[("A.kicad_sym".into(), "ab".into())],
             &["A".into()],
+            "symbols and part rows",
         );
+        assert!(n.contains("holds symbols and part rows, taken"));
+        assert!(!n.contains("3D"));
         assert!(
             n.contains("format conversion")
                 && n.contains("https://x/y@9.0.0")
                 && n.contains("signex-kicad-import")
         );
         assert!(n.contains("legalcode") && n.contains("kicad.org/libraries/license"));
-        assert!(notice(None, None, &[], &[]).contains("not stated"));
+        assert!(notice(None, None, &[], &[], "footprints").contains("not stated"));
     }
 }

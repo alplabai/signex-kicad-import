@@ -373,9 +373,10 @@ fn fill(f: Fill, n: &mut Notes<'_>) -> Option<[u8; 4]> {
         Fill::None => None,
         Fill::Color(c) => Some(rgba(c)),
         Fill::Background => {
+            // The shape is still filled, in Signex's colour: nothing is lost.
             n.note(
-                "symbol.fill_approximated",
-                Severity::Approximated,
+                "symbol.fill_background_default",
+                Severity::Info,
                 "theme fill written as Signex's default fill colour",
             );
             Some(BACKGROUND_FILL)

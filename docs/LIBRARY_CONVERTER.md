@@ -46,7 +46,7 @@ items arose, 2 when something was dropped or an item failed, 1 when nothing
 usable could be read. `--dry-run` maps everything and writes only the report.
 `--update` needs the report of a library with the same id and overwrites in
 place. Library tables are read (each listed library is converted) and part rows are
-written (`LIBRARY_MAPPING.md`); 3D models are not converted yet.
+written (`LIBRARY_MAPPING.md`); STEP models are embedded in the footprint files (`--models skip` leaves them out and reports each).
 
 ### Streams
 

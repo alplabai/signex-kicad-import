@@ -286,7 +286,7 @@ pub fn convert_footprint(
     if !tags.is_empty() {
         sink.note(
             "footprint.tags_in_description",
-            Severity::Approximated,
+            Severity::Info,
             "tags have no field; written at the end of the description",
         );
     }

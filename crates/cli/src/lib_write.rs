@@ -353,6 +353,29 @@ pub fn build(
     {
         files.push((lib_notice::LICENSE_FILE.to_string(), text.into_bytes()));
     }
+    // What each library actually holds, for its notice.
+    let model_count: usize = read.footprints.iter().map(|f| f.models.len()).sum();
+    let footprints_text = if model_count > 0 {
+        format!("footprints (with {model_count} embedded 3D models)")
+    } else {
+        "footprints".to_string()
+    };
+    let mut main_parts: Vec<String> = Vec::new();
+    if written.symbols > 0 {
+        main_parts.push("symbols".into());
+    }
+    if written.parts > 0 {
+        main_parts.push("part rows".into());
+    }
+    if split.is_none() && !read.footprints.is_empty() {
+        main_parts.push(footprints_text.clone());
+    }
+    let main_contents = if main_parts.is_empty() {
+        "no converted items".to_string()
+    } else {
+        main_parts.join(", ")
+    };
+    let fp_contents = footprints_text;
     let inputs: Vec<(String, String)> = read
         .sources
         .iter()
@@ -381,8 +404,14 @@ pub fn build(
     if !untracked(lib_notice::NOTICE_FILE) {
         files.push((
             lib_notice::NOTICE_FILE.to_string(),
-            lib_notice::notice(provenance.license, provenance.source, &inputs, &libraries)
-                .into_bytes(),
+            lib_notice::notice(
+                provenance.license,
+                provenance.source,
+                &inputs,
+                &libraries,
+                &main_contents,
+            )
+            .into_bytes(),
         ));
     }
     if let Some(s) = split {
@@ -407,8 +436,14 @@ pub fn build(
         fp_libs.dedup();
         footprint_files.push((
             lib_notice::NOTICE_FILE.to_string(),
-            lib_notice::notice(provenance.license, provenance.source, &inputs, &fp_libs)
-                .into_bytes(),
+            lib_notice::notice(
+                provenance.license,
+                provenance.source,
+                &inputs,
+                &fp_libs,
+                &fp_contents,
+            )
+            .into_bytes(),
         ));
     }
     Built {

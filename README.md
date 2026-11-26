@@ -39,7 +39,7 @@ and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
 libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
 `library` command converts KiCad symbol libraries and footprints into a Signex
 library directory (`docs/LIBRARY_MAPPING.md`: symbols, footprints and part rows,
-from files, folders or library tables; no 3D models yet).
+from files, folders or library tables; 3D STEP models are embedded).
 
 ## What the board conversion covers
 

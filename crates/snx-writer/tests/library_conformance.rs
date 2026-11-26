@@ -651,7 +651,13 @@ fn an_empty_courtyard_is_written_and_a_library_without_classes_has_the_root_key(
     );
     toml::from_str::<toml::Value>(&text).expect("valid TOML");
     // A non-empty one is as before (the fixtures compare byte for byte above).
-    let m = write_manifest("01940000-0000-7000-8000-000000000001", "N", &Default::default(), &[], &[]);
+    let m = write_manifest(
+        "01940000-0000-7000-8000-000000000001",
+        "N",
+        &Default::default(),
+        &[],
+        &[],
+    );
     let lines: Vec<&str> = m.lines().collect();
     assert_eq!(lines[2], "classes = []");
     toml::from_str::<toml::Value>(&m).expect("valid TOML");
@@ -659,7 +665,10 @@ fn an_empty_courtyard_is_written_and_a_library_without_classes_has_the_root_key(
         "01940000-0000-7000-8000-000000000001",
         "N",
         &Default::default(),
-        &[snx_writer::part_table::Class { key: "k".into(), label: "K".into() }],
+        &[snx_writer::part_table::Class {
+            key: "k".into(),
+            label: "K".into(),
+        }],
         &[],
     );
     assert!(!with.contains("classes = []") && with.contains("[[classes]]"));

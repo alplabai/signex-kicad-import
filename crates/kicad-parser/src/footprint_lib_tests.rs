@@ -471,7 +471,7 @@ fn skip_wrl_scale_and_extra_models_are_reported() {
 
 #[test]
 fn a_model_path_cannot_leave_the_folders_it_may_be_read_from() {
-    for name in ["Escape", "Absolute", "Linked"] {
+    for name in ["Escape", "Absolute"] {
         let (file, items) = model_fp(name, false);
         assert!(file.models.is_empty(), "{name}: embedded");
         let model_items: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Model).collect();
@@ -553,4 +553,38 @@ fn every_pad_and_footprint_setting_is_mapped_or_reported() {
                 .contains_key(carried)
         );
     }
+}
+
+/// A model file that is a link is never opened. The link is made here, not
+/// committed, so a Windows checkout has no symlink to trip over.
+#[cfg(unix)]
+#[test]
+fn a_model_that_is_a_link_is_not_read() {
+    let dir = std::env::temp_dir().join(format!("snx-model-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::copy(models_dir().join("Good.step"), dir.join("Good.step")).expect("copy");
+    std::os::unix::fs::symlink(dir.join("Good.step"), dir.join("Link.step")).expect("link");
+    let cx = ModelCx {
+        models_dir: Some(dir.clone()),
+        ..ModelCx::default()
+    };
+    let text = "(footprint \"Linked\" (layer \"F.Cu\") (model \"Link.step\"))";
+    let mut items = Vec::new();
+    let file = convert_footprint(text, "T", &ids, &mut items, &cx, &dir).expect("converts");
+    assert!(file.models.is_empty());
+    let model_items: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Model).collect();
+    assert_eq!(model_items.len(), 1, "{items:?}");
+    assert_eq!(model_items[0].severity, Severity::Dropped);
+    // The real file beside it is still fine.
+    let ok = "(footprint \"Plain\" (layer \"F.Cu\") (model \"Good.step\"))";
+    let mut items = Vec::new();
+    assert_eq!(
+        convert_footprint(ok, "T", &ids, &mut items, &cx, &dir)
+            .expect("converts")
+            .models
+            .len(),
+        1
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }

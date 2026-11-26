@@ -62,8 +62,18 @@ fn a_symbol_library_without_a_subcommand_becomes_one_snxsym() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../kicad-parser/tests/fixtures/symbols/multiunit.kicad_sym");
     let dir = scratch("legacy-sym");
-    let out = run(&["--json", fixture.to_str().expect("utf8"), "-o", dir.to_str().expect("utf8")]);
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = run(&[
+        "--json",
+        fixture.to_str().expect("utf8"),
+        "-o",
+        dir.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let summary: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(summary["ok"], true);
     assert!(summary.get("track_ends").is_none());
@@ -73,10 +83,32 @@ fn a_symbol_library_without_a_subcommand_becomes_one_snxsym() {
     let value: toml::Value = toml::from_str(&text).expect("valid TOML");
     assert_eq!(value["format"].as_str(), Some("snxsym/v4"));
     assert_eq!(value["symbols"][0]["name"].as_str(), Some("Dual_Gate"));
-    assert!(summary["warnings"].as_array().expect("warnings").iter().any(|w| w["message"].as_str().is_some_and(|m| m.contains("fill"))));
+    assert!(
+        summary["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|w| w["message"].as_str().is_some_and(|m| m.contains("fill")))
+    );
     // The same input gives the same bytes; an existing file needs --force.
-    assert_ne!(run(&["--json", fixture.to_str().expect("utf8"), "-o", dir.to_str().expect("utf8")]).status.code(), Some(0));
-    let again = run(&["--json", "--force", fixture.to_str().expect("utf8"), "-o", dir.to_str().expect("utf8")]);
+    assert_ne!(
+        run(&[
+            "--json",
+            fixture.to_str().expect("utf8"),
+            "-o",
+            dir.to_str().expect("utf8")
+        ])
+        .status
+        .code(),
+        Some(0)
+    );
+    let again = run(&[
+        "--json",
+        "--force",
+        fixture.to_str().expect("utf8"),
+        "-o",
+        dir.to_str().expect("utf8"),
+    ]);
     assert_eq!(again.status.code(), Some(0));
     assert_eq!(std::fs::read_to_string(&file).expect("snxsym"), text);
     std::fs::remove_dir_all(&dir).expect("cleanup");
@@ -87,14 +119,35 @@ fn derived_symbols_stand_alone_in_a_single_file() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../kicad-parser/tests/fixtures/symbols/extends.kicad_sym");
     let dir = scratch("legacy-sym-extends");
-    let out = run(&["--json", fixture.to_str().expect("utf8"), "-o", dir.to_str().expect("utf8")]);
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
-    let value: toml::Value = toml::from_str(&std::fs::read_to_string(dir.join("extends.snxsym")).expect("f")).expect("toml");
-    let names: Vec<&str> = value["symbols"].as_array().expect("symbols").iter().filter_map(|s| s["name"].as_str()).collect();
+    let out = run(&[
+        "--json",
+        fixture.to_str().expect("utf8"),
+        "-o",
+        dir.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(dir.join("extends.snxsym")).expect("f"))
+            .expect("toml");
+    let names: Vec<&str> = value["symbols"]
+        .as_array()
+        .expect("symbols")
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
     assert_eq!(names, ["Base_Part", "Derived_Part", "Grandchild_Part"]);
     // Each carries the parent's pin.
     for s in value["symbols"].as_array().expect("symbols") {
-        assert!(s["pins_tsv"].as_str().expect("pins").lines().count() == 2, "{}", s["name"]);
+        assert!(
+            s["pins_tsv"].as_str().expect("pins").lines().count() == 2,
+            "{}",
+            s["name"]
+        );
     }
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

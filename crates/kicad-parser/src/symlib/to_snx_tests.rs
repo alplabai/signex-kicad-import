@@ -137,7 +137,10 @@ fn units_styles_and_the_lowest_token_carry_over() {
             .any(|g| matches!(&g.kind, GraphicKind::Polygon { vertices } if vertices.len() == 3))
     );
     let sources = codes(&items, "multiunit:Dual_Gate");
-    assert!(sources.contains(&"symbol.fill_approximated"), "{sources:?}");
+    assert!(
+        sources.contains(&"symbol.fill_background_default"),
+        "{sources:?}"
+    );
     // The arc and the bezier carry fills Signex cannot hold.
     assert!(sources.contains(&"symbol.fill_dropped"), "{sources:?}");
 }

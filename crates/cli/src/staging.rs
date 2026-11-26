@@ -49,6 +49,14 @@ impl Staging {
             std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        // What we made must be a real folder of ours, not a link someone put there.
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() && (!cfg!(unix) || owned_by(&meta, uid)) => {}
+            _ => anyhow::bail!(
+                "{} is not a plain folder of the current user; remove it",
+                dir.display()
+            ),
+        }
         Ok(Staging {
             dir,
             out: out.to_path_buf(),

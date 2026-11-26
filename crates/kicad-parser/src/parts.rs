@@ -265,13 +265,16 @@ pub fn build_parts(
                 // A derived symbol shares its parent's drawing, and with it the
                 // value placement reads from the symbol.
                 if lookup(lib, s, "Value") != lookup(lib, root, "Value") {
-                    out.items.push(Item::new(
-                        ItemKind::Part,
-                        &source,
-                        "part.value_from_parent",
-                        Severity::Approximated,
-                        "the part shares its parent's symbol, whose value text it shows instead of its own",
-                    ));
+                    out.items.push(
+                        Item::new(
+                            ItemKind::Part,
+                            &source,
+                            "part.value_from_parent",
+                            Severity::Approximated,
+                            "the part shares its parent's symbol, whose value text it shows instead of its own",
+                        )
+                        .with_id(&row.row_id),
+                    );
                 }
             }
             if let Some(v) = update.symbol_versions.get(&row.symbol.uuid) {

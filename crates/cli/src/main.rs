@@ -170,9 +170,7 @@ fn run(cli: &Cli) -> Result<Outcome> {
             "schematic conversion is not part of this release; \
              convert the board (.kicad_pcb or .kicad_pro) or a symbol library (.kicad_sym)"
         ),
-        other => bail!(
-            "unsupported input .{other}: expected .kicad_pcb, .kicad_pro or .kicad_sym"
-        ),
+        other => bail!("unsupported input .{other}: expected .kicad_pcb, .kicad_pro or .kicad_sym"),
     };
     let out_dir = match &cli.output {
         Some(dir) => {
@@ -273,23 +271,39 @@ fn convert_symbol_file(cli: &Cli, input: &Path) -> Result<Outcome> {
                 .with_context(|| format!("creating output directory {}", dir.display()))?;
             dir.clone()
         }
-        None => input.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
+        None => input
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
     };
     let path = out_dir.join(format!("{stem}.snxsym"));
     if path.exists() && !cli.force {
         bail!("{} exists; pass --force to replace it", path.display());
     }
     let text = snx_writer::write_symbol_file(&file);
-    write_temp(&path, &text)?;
-    std::fs::rename(temp_path(&path), &path)
-        .with_context(|| format!("replacing {}", path.display()))?;
+    let written = write_temp(&path, &text).and_then(|()| {
+        std::fs::rename(temp_path(&path), &path)
+            .with_context(|| format!("replacing {}", path.display()))
+    });
+    if let Err(e) = written {
+        // Leave no temporary file behind.
+        let _ = std::fs::remove_file(temp_path(&path));
+        return Err(e);
+    }
     sync_dir(&path)?;
     let mut outcome = Outcome {
         symbols: true,
         ..Outcome::default()
     };
-    for item in items.iter().filter(|i| i.severity != kicad_parser::Severity::Info) {
-        let count = item.detail.get("count").and_then(serde_json::Value::as_u64).unwrap_or(1);
+    for item in items
+        .iter()
+        .filter(|i| i.severity != kicad_parser::Severity::Info)
+    {
+        let count = item
+            .detail
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1);
         for _ in 0..count {
             outcome.report.note(item.message.clone());
         }

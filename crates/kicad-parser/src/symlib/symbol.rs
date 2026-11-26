@@ -44,6 +44,9 @@ impl Sink<'_> {
 /// Tokens of a symbol that are read (or knowingly ignored) elsewhere.
 const KNOWN_SYMBOL_TOKENS: &[&str] = &[
     "extends",
+    "in_pos_files",
+    "duplicate_pin_numbers_are_jumpers",
+    "body_styles",
     "power",
     "in_bom",
     "on_board",
@@ -85,6 +88,15 @@ pub fn parse_symbol(node: &SExpr, sink: &mut Sink<'_>) -> Option<Symbol> {
     if let Some(n) = node.find("pin_names") {
         symbol.pin_names_hidden = parts::flag(n, "hide").unwrap_or(false);
         symbol.pin_names_offset = n.find("offset").and_then(|o| o.arg_f64(0));
+    }
+    if parts::flag(node, "duplicate_pin_numbers_are_jumpers") == Some(true) {
+        sink.add(
+            &name,
+            "symbol.jumper_pins_not_carried",
+            Severity::Approximated,
+            "pins sharing a number as jumpers have no Signex field; the pins are written as they are".into(),
+            json!({}),
+        );
     }
     for p in node.find_all("property") {
         match parts::property(p) {

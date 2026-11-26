@@ -359,3 +359,12 @@ fn bytes_that_are_not_utf8_are_replaced_and_reported() {
         .expect("item");
     assert_eq!(item.severity, Severity::Approximated);
 }
+
+#[test]
+fn current_default_tokens_are_known_and_only_a_jumper_flag_that_is_on_is_reported() {
+    let text = "(kicad_symbol_lib (symbol \"A\" (in_pos_files yes) (duplicate_pin_numbers_are_jumpers no) (body_styles demorgan)\n  (symbol \"A_1_1\" (pin passive line (at 0 0 0) (length 1) (name \"A\") (number \"1\"))))\n  (symbol \"B\" (duplicate_pin_numbers_are_jumpers yes)))";
+    let read = read_symbol_lib(text, "t").expect("reads");
+    let codes: Vec<&str> = read.items.iter().map(|i| i.code.as_str()).collect();
+    assert_eq!(codes, ["symbol.jumper_pins_not_carried"], "{codes:?}");
+    assert_eq!(read.items[0].source, "t:B");
+}

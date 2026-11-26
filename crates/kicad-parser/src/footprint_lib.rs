@@ -406,7 +406,8 @@ fn report_unmapped_settings(root: &SExpr, sink: &mut Sink<'_>) {
             if matches!(child, SExpr::Atom(_)) {
                 continue;
             }
-            if !PAD_KNOWN.contains(&word) {
+            // `(setting no)` is the default state: nothing to carry, nothing lost.
+            if !PAD_KNOWN.contains(&word) && child.first_arg() != Some("no") {
                 *pads.entry(word.to_string()).or_insert(0) += 1;
             }
         }
@@ -415,6 +416,7 @@ fn report_unmapped_settings(root: &SExpr, sink: &mut Sink<'_>) {
     for child in root.children() {
         if let (SExpr::List(_), Some(word)) = (child, child.keyword())
             && !FOOTPRINT_KNOWN.contains(&word)
+            && child.first_arg() != Some("no")
         {
             *fp.entry(word.to_string()).or_insert(0) += 1;
         }
@@ -548,7 +550,7 @@ fn adapt(b: &BoardFootprint, margins: Margins, sink: &mut Sink<'_>) -> out::Foot
                 sink.note(
                     "footprint.graphic_layer_dropped",
                     Severity::Dropped,
-                    "drawing on a layer the library footprint does not keep dropped",
+                    "drawing dropped: Signex footprints have no such layer yet (signex #3133)",
                 );
                 continue;
             }

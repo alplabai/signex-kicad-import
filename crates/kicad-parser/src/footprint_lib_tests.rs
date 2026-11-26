@@ -138,6 +138,7 @@ fn drawings_land_on_their_lists_and_the_courtyard_closes() {
         .find(|i| i.code == "footprint.graphic_layer_dropped")
         .expect("item");
     assert_eq!(layer_item.severity, Severity::Dropped);
+    assert!(layer_item.message.contains("signex #3133"));
 
     let c = by_name(&read, "Conn_Test_2");
     assert!(

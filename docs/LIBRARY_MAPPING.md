@@ -131,7 +131,7 @@ degrees is 270 in the file).
 | footprint on `B.Cu` | refused (error): turning a flipped footprint back needs the mirrored pad and text turns, which the format's frame rules do not pin down for a standalone file |
 | fp_line / fp_rect / fp_circle / fp_arc / fp_poly / fp_text on silk, fab | `silk_f`, `silk_b`, `fab_f`, `fab_b` (line, rectangle, circle, arc, polygon, text); an arc runs from +x toward +y as the format says; text rotation not carried |
 | courtyard drawings | `courtyard`: a polygon or rectangle as is, four-plus lines chained into the ring, else the bounding box (approximated) |
-| other layers | dropped (`footprint.graphic_layer_dropped`) |
+| other layers (user, mechanical, comments, adhesive, ...) | dropped (`footprint.graphic_layer_dropped`; "Signex footprints have no such layer yet (signex #3133)") |
 | `descr`, `tags` | `description`; tags at its end (approximated) |
 | `attr exclude_from_bom` | `component_type` `StandardNoBom`; other flags: approximated |
 | Reference prefix (`REF**` is no prefix) | `default_designator` |

@@ -143,8 +143,15 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
     let started = now_utc();
     // What the earlier run wrote, read before this run replaces its report.
     let previous = args.update.then(|| Previous::load(&out));
+    let (search_dirs, search_vars) = crate::lib_inputs::split_search_paths(&args.search_path);
+    let models = kicad_parser::models::ModelCx::from_environment(
+        args.models == crate::lib_inputs::Models::Skip,
+        args.models_dir.clone(),
+        search_dirs,
+        search_vars,
+    );
     emitter.phase("read", Some(inputs.len()));
-    let read = match read_inputs(&inputs, library_id, &args.search_path, emitter) {
+    let read = match read_inputs(&inputs, library_id, &args.search_path, &models, emitter) {
         Ok(r) => r,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };

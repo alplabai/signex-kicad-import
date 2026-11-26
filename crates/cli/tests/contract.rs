@@ -463,7 +463,7 @@ fn a_pretty_folder_and_a_single_mod_file_become_one_footprint_each() {
         .filter_map(|i| i["code"].as_str())
         .collect();
     assert!(
-        codes.contains(&"model.deferred") && codes.contains(&"footprint.unreadable"),
+        codes.contains(&"model.not_found") && codes.contains(&"footprint.unreadable"),
         "{codes:?}"
     );
 
@@ -1152,5 +1152,72 @@ fn an_update_deletes_only_what_the_converter_wrote_itself() {
             .to_string()
             .contains("00000000-0000-4000-8000-000000000001")
     );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn models_are_embedded_with_models_dir_and_left_out_with_skip() {
+    let dir = scratch("lib-models");
+    let fp = fixtures_dir("footprints/Models.pretty/Good.kicad_mod");
+    let models = fixtures_dir("footprints/models");
+    let run_with = |out: &str, extra: &[&str]| {
+        let mut v: Vec<&str> = vec![
+            "library",
+            fp.to_str().expect("utf8"),
+            "--output",
+            out,
+            "--json",
+        ];
+        v.extend(extra);
+        run(&v)
+    };
+    let out1 = dir.join("with");
+    let r = run_with(
+        out1.to_str().expect("utf8"),
+        &["--models-dir", models.to_str().expect("utf8")],
+    );
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let file = std::fs::read_dir(out1.join("footprints"))
+        .expect("dir")
+        .next()
+        .expect("file")
+        .expect("e")
+        .path();
+    let text = std::fs::read_to_string(file).expect("fpt");
+    assert!(text.starts_with("format = \"snxfpt/1.4\"") && text.contains("[[models]]"));
+    let report = report_of(&out1);
+    assert_eq!(report["counts"]["written"]["models"], 1);
+
+    let out2 = dir.join("skipped");
+    let r = run_with(
+        out2.to_str().expect("utf8"),
+        &[
+            "--models-dir",
+            models.to_str().expect("utf8"),
+            "--models",
+            "skip",
+        ],
+    );
+    assert_eq!(r.status.code(), Some(2));
+    let file = std::fs::read_dir(out2.join("footprints"))
+        .expect("dir")
+        .next()
+        .expect("file")
+        .expect("e")
+        .path();
+    let text = std::fs::read_to_string(file).expect("fpt");
+    assert!(text.starts_with("format = \"snxfpt/1.1\"") && !text.contains("[[models]]"));
+    let codes: Vec<String> = report_of(&out2)["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str().map(str::to_string))
+        .collect();
+    assert!(codes.contains(&"model.skipped".to_string()));
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

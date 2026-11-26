@@ -11,6 +11,7 @@ use snx_writer::footprint_file::GraphicKind;
 use snx_writer::write_footprint_file;
 
 use super::*;
+use crate::models::ModelCx;
 
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/footprints/Test.pretty")
@@ -21,7 +22,7 @@ fn ids(is_file: bool, name: &str) -> String {
 }
 
 fn read() -> FootprintLibRead {
-    read_pretty_dir(&dir(), &ids).expect("folder reads")
+    read_pretty_dir(&dir(), &ids, &ModelCx::default()).expect("folder reads")
 }
 
 fn by_name<'a>(read: &'a FootprintLibRead, name: &str) -> &'a out::Footprint {
@@ -184,14 +185,15 @@ fn description_tags_attr_and_designator_are_carried() {
 #[test]
 fn models_zones_and_board_messages_are_reported() {
     let read = read();
+    // With no models folder the variable is unset and the model is not found.
     let model = read
         .items
         .iter()
-        .find(|i| i.code == "model.deferred")
+        .find(|i| i.code == "model.not_found")
         .expect("model item");
     assert_eq!(
         (model.kind, model.severity),
-        (ItemKind::Model, Severity::Info)
+        (ItemKind::Model, Severity::Dropped)
     );
     assert!(
         model.detail["path"]
@@ -235,7 +237,14 @@ fn damaged_input_is_an_item_and_never_a_panic() {
     while cut < whole.len() {
         if whole.is_char_boundary(cut) {
             let mut items = Vec::new();
-            let _ = convert_footprint(&whole[..cut], "Test", &ids, &mut items);
+            let _ = convert_footprint(
+                &whole[..cut],
+                "Test",
+                &ids,
+                &mut items,
+                &ModelCx::default(),
+                Path::new("."),
+            );
         }
         cut += 11;
     }
@@ -248,7 +257,14 @@ fn damaged_input_is_an_item_and_never_a_panic() {
         "\u{0}\u{1}",
     ] {
         let mut items = Vec::new();
-        let _ = convert_footprint(garbage, "Test", &ids, &mut items);
+        let _ = convert_footprint(
+            garbage,
+            "Test",
+            &ids,
+            &mut items,
+            &ModelCx::default(),
+            Path::new("."),
+        );
     }
 }
 
@@ -258,7 +274,14 @@ fn special(name: &str) -> (Result<FootprintFile, ParseError>, Vec<Item>) {
         .join(name);
     let text = std::fs::read_to_string(path).expect("fixture");
     let mut items = Vec::new();
-    let result = convert_footprint(&text, "Special", &ids, &mut items);
+    let result = convert_footprint(
+        &text,
+        "Special",
+        &ids,
+        &mut items,
+        &ModelCx::default(),
+        Path::new("."),
+    );
     (result, items)
 }
 
@@ -353,4 +376,113 @@ fn footprint_level_margins_are_inherited_and_ratios_reported() {
 fn a_bottom_side_footprint_is_refused() {
     let (file, _) = special("Bottom_Test.kicad_mod");
     assert!(file.is_err_and(|e| e.to_string().contains("bottom side")));
+}
+
+fn models_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/footprints/models")
+}
+
+fn model_fp(name: &str, skip: bool) -> (FootprintFile, Vec<Item>) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/footprints/Models.pretty");
+    let text = std::fs::read_to_string(dir.join(format!("{name}.kicad_mod"))).expect("fixture");
+    let cx = ModelCx {
+        skip,
+        models_dir: Some(models_dir()),
+        env: vec![(
+            "KICAD8_3DMODEL_DIR".into(),
+            models_dir().display().to_string(),
+        )],
+        ..ModelCx::default()
+    };
+    let mut items = Vec::new();
+    let file = convert_footprint(&text, "Models", &ids, &mut items, &cx, &dir).expect("converts");
+    (file, items)
+}
+
+fn codes_of(items: &[Item]) -> Vec<&str> {
+    items.iter().map(|i| i.code.as_str()).collect()
+}
+
+#[test]
+fn a_step_model_is_embedded_with_its_hash_and_placement() {
+    let (file, items) = model_fp("Good", false);
+    assert!(items.iter().all(|i| i.kind != ItemKind::Model), "{items:?}");
+    let m = &file.models[0];
+    let bytes = std::fs::read(models_dir().join("Good.step")).expect("step");
+    assert_eq!(&m.bytes[..], &bytes[..]);
+    assert_eq!(m.hash.len(), 64);
+    let step = file.footprint.step.clone().expect("attachment");
+    assert_eq!(
+        (step.content_hash.as_str(), step.filename.as_str()),
+        (m.hash.as_str(), "Good.step")
+    );
+    assert_eq!(
+        (step.offset_xyz, step.rotation_xyz),
+        ([0.5, -1.0, 2.0], [0.0, 0.0, 90.0])
+    );
+    let text = write_footprint_file(&file);
+    assert!(text.starts_with("format = \"snxfpt/1.4\"") && text.contains("[[models]]"));
+    toml::from_str::<toml::Value>(&text).expect("valid TOML");
+}
+
+#[test]
+fn skip_wrl_scale_and_extra_models_are_reported() {
+    let (file, items) = model_fp("Good", true);
+    assert!(file.models.is_empty() && file.footprint.step.is_none());
+    assert_eq!(
+        codes_of(&items)
+            .iter()
+            .filter(|c| **c == "model.skipped")
+            .count(),
+        1
+    );
+    assert!(write_footprint_file(&file).starts_with("format = \"snxfpt/1.1\""));
+    let (file, items) = model_fp("Scaled", false);
+    assert_eq!(file.models.len(), 1);
+    let scale = items
+        .iter()
+        .find(|i| i.code == "model.scale_not_carried")
+        .expect("item");
+    assert_eq!(scale.severity, Severity::Approximated);
+    let (file, items) = model_fp("WrlOnly", false);
+    assert!(file.models.is_empty());
+    assert_eq!(
+        items
+            .iter()
+            .find(|i| i.code == "model.format_unsupported")
+            .map(|i| i.severity),
+        Some(Severity::Dropped)
+    );
+    // A WRL with a STEP file beside it embeds the STEP file and says so.
+    let (file, items) = model_fp("Both", false);
+    assert_eq!(file.models[0].filename, "Both.step");
+    assert!(codes_of(&items).contains(&"model.step_substituted"));
+    let (file, items) = model_fp("Two", false);
+    assert_eq!(file.models.len(), 1);
+    assert!(codes_of(&items).contains(&"model.extra_dropped"));
+}
+
+#[test]
+fn a_model_path_cannot_leave_the_folders_it_may_be_read_from() {
+    for name in ["Escape", "Absolute", "Linked"] {
+        let (file, items) = model_fp(name, false);
+        assert!(file.models.is_empty(), "{name}: embedded");
+        let model_items: Vec<&Item> = items.iter().filter(|i| i.kind == ItemKind::Model).collect();
+        assert_eq!(model_items.len(), 1, "{name}: {items:?}");
+        assert_eq!(model_items[0].severity, Severity::Dropped, "{name}");
+        // The message shows the path as written, never a resolved one.
+        assert!(
+            !model_items[0].message.contains("/srv/") && !model_items[0].message.contains("/tmp/"),
+            "{name}: {}",
+            model_items[0].message
+        );
+    }
+    let (_, items) = model_fp("Escape", false);
+    assert!(codes_of(&items).contains(&"model.path_refused"));
+    let (_, items) = model_fp("Missing", false);
+    let missing = items
+        .iter()
+        .find(|i| i.code == "model.not_found")
+        .expect("item");
+    assert!(missing.message.contains("${NOPE}"));
 }

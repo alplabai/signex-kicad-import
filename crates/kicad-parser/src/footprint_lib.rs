@@ -29,6 +29,7 @@ use crate::geometry::number_of;
 use crate::ids::Ids;
 use crate::items::{Item, ItemKind, Severity};
 use crate::layers::Stack;
+use crate::models::ModelCx;
 use crate::nets::NetTable;
 use crate::report::Report;
 use crate::sexpr::{self, SExpr};
@@ -47,7 +48,11 @@ pub struct FootprintLibRead {
 pub type IdOf<'a> = &'a dyn Fn(bool, &str) -> String;
 
 /// Read every `*.kicad_mod` of a `.pretty` folder, by file name.
-pub fn read_pretty_dir(dir: &Path, ids: IdOf<'_>) -> Result<FootprintLibRead, ParseError> {
+pub fn read_pretty_dir(
+    dir: &Path,
+    ids: IdOf<'_>,
+    models: &ModelCx,
+) -> Result<FootprintLibRead, ParseError> {
     let library = dir
         .file_stem()
         .and_then(|s| s.to_str())
@@ -78,19 +83,30 @@ pub fn read_pretty_dir(dir: &Path, ids: IdOf<'_>) -> Result<FootprintLibRead, Pa
             ));
             continue;
         }
-        read_file_into(&path, &library, ids, &mut read);
+        read_file_into(&path, &library, ids, models, &mut read);
     }
     Ok(read)
 }
 
 /// Read one `.kicad_mod`; `library` names it in report items.
-pub fn read_footprint_file(path: &Path, library: &str, ids: IdOf<'_>) -> FootprintLibRead {
+pub fn read_footprint_file(
+    path: &Path,
+    library: &str,
+    ids: IdOf<'_>,
+    models: &ModelCx,
+) -> FootprintLibRead {
     let mut read = FootprintLibRead::default();
-    read_file_into(path, library, ids, &mut read);
+    read_file_into(path, library, ids, models, &mut read);
     read
 }
 
-fn read_file_into(path: &Path, library: &str, ids: IdOf<'_>, read: &mut FootprintLibRead) {
+fn read_file_into(
+    path: &Path,
+    library: &str,
+    ids: IdOf<'_>,
+    models: &ModelCx,
+    read: &mut FootprintLibRead,
+) {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -117,7 +133,8 @@ fn read_file_into(path: &Path, library: &str, ids: IdOf<'_>, read: &mut Footprin
         }
     };
     read.found += 1;
-    match convert_footprint(&text, library, ids, &mut read.items) {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    match convert_footprint(&text, library, ids, &mut read.items, models, dir) {
         Ok(file) => {
             if read
                 .files
@@ -159,6 +176,8 @@ pub fn convert_footprint(
     library: &str,
     ids: IdOf<'_>,
     items: &mut Vec<Item>,
+    models: &ModelCx,
+    fp_dir: &Path,
 ) -> Result<FootprintFile, ParseError> {
     let mut root = sexpr::parse(text)?;
     if !matches!(root.keyword(), Some("footprint" | "module")) {
@@ -219,19 +238,8 @@ pub fn convert_footprint(
             sink.items.push(item);
         }
     }
-    for model in root.find_all("model") {
-        let path = model.first_arg().unwrap_or("");
-        sink.items.push(
-            Item::new(
-                ItemKind::Model,
-                &source,
-                "model.deferred",
-                Severity::Info,
-                "3D model not converted yet",
-            )
-            .with_detail(json!({ "path": path })),
-        );
-    }
+    let embedded =
+        crate::models::attach(&root.find_all("model"), fp_dir, models, &source, sink.items);
     if !root.find_all("zone").is_empty() {
         sink.note(
             "footprint.zone_dropped",
@@ -259,6 +267,11 @@ pub fn convert_footprint(
         );
     }
     let mut f = adapt(&board, margins, &mut sink);
+    let (step, model_list) = match embedded {
+        Some((a, m)) => (Some(a), vec![m]),
+        None => (None, Vec::new()),
+    };
+    f.step = step;
     f.uuid = ids(false, &name);
     f.name = name.clone();
     let descr = root.find("descr").and_then(SExpr::first_arg).unwrap_or("");
@@ -302,7 +315,7 @@ pub fn convert_footprint(
         created: EPOCH.to_string(),
         updated: EPOCH.to_string(),
         footprint: f,
-        models: Vec::new(),
+        models: model_list,
     })
 }
 

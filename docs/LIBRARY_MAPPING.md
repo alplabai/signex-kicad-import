@@ -127,7 +127,7 @@ degrees is 270 in the file).
 | `descr`, `tags` | `description`; tags at its end (approximated) |
 | `attr exclude_from_bom` | `component_type` `StandardNoBom`; other flags: approximated |
 | Reference prefix (`REF**` is no prefix) | `default_designator` |
-| `model` | `model.deferred` (info); 3D models come with the model unit |
+| `model` | embedded in the footprint file (format section 8): the path is expanded only with `KIPRJMOD`, KiCad's `KICAD<n>_3DMODEL_DIR` and `--search-path NAME=DIR`, looked for as written, then below `--models-dir` and the search folders (rest of the path, then file name). Only STEP files (`.step`, `.stp`); another format with a STEP file of the same name beside it embeds that one (`model.step_substituted`, info), without it the model is dropped (`model.format_unsupported`). The file must be a regular file (never a link, opened without following links and checked on the open handle), at most 256 MiB, and lie inside the footprint's folder, `--models-dir`, a search folder or a `KICAD<n>_3DMODEL_DIR`; a path that leaves them (`..`, absolute) is `model.path_refused`. Messages show the path as written. `(offset (xyz))` is carried as `offset_xyz` in millimetres (the old `(at (xyz))` is inches, converted and reported), `(rotate (xyz))` as `rotation_xyz` in degrees; `scale` other than 1 is reported (`model.scale_not_carried`). The spec gives no frame for these two values, so they are written unchanged; whether Signex and KiCad agree on axes and signs is an open point. A footprint holds one model; others are `model.extra_dropped`. `--models skip` writes none and reports each (`model.skipped`). Data: raw deflate (level 6), base64 wrapped at 76 columns, `size` = raw bytes, `hash` = sha256 of the raw bytes; the file token is `snxfpt/1.4` only when it holds a model |
 | zones | dropped (`footprint.zone_dropped`) |
 
 A footprint also gets the format's default `body_3d` (Extrude, 1.0 mm, the default colours), written explicitly so the file is the same whether or not a reader treats the key as optional.
@@ -153,7 +153,9 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 | `footprint.invalid_utf8` | approximated | bytes replaced |
 | `footprint.zone_dropped`, `footprint.graphic_layer_dropped`, `footprint.graphic_unreadable`, `pad.layer_dropped` | dropped | |
 | `pad.paste_ratio_not_carried`, `pad.property_not_carried`, `pad.slot_orientation_approximated`, `pad.slot_not_placeable`, `footprint.courtyard_approximated`, `footprint.tags_in_description`, `footprint.attr_not_carried`, `footprint.text_rotation_dropped`, `pad.npth_copper_dropped`, `pad.text_sanitized` | approximated | |
-| `model.deferred` | info | 3D model not converted yet |
+| `model.not_found`, `model.format_unsupported`, `model.path_refused`, `model.too_large`, `model.unreadable`, `model.extra_dropped`, `model.skipped` | dropped | see the model row |
+| `model.step_substituted` | info | |
+| `model.scale_not_carried`, `model.offset_inches` | approximated | |
 | `part.written` | info | the row was written; `id` is its `row_id` |
 | `part.footprint_missing` | error | the named footprint was not converted; row skipped |
 | `part.table_name_changed`, `part.text_sanitized` | approximated | |

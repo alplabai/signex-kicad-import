@@ -15,6 +15,7 @@ use anyhow::Result;
 use kicad_parser::footprint_lib::{read_footprint_file, read_pretty_dir};
 use kicad_parser::lib_table::{TableKind, parse_lib_table, resolve_entry_noted};
 use kicad_parser::libids::item_id;
+use kicad_parser::models::ModelCx;
 use kicad_parser::symlib::{SymbolLibRead, read_symbol_dir, read_symbol_file};
 use kicad_parser::{Item, ItemKind, Severity};
 use serde_json::json;
@@ -50,12 +51,14 @@ struct Reader {
     seen_footprints: HashSet<String>,
     /// Every library a read was attempted for.
     libraries: HashSet<String>,
+    models: ModelCx,
 }
 
 pub fn read_inputs(
     inputs: &[(PathBuf, InputKind)],
     library_id: Uuid,
     search: &[PathBuf],
+    models: &ModelCx,
     emitter: &Emitter,
 ) -> Result<Read> {
     let (search, vars) = crate::lib_inputs::split_search_paths(search);
@@ -74,6 +77,7 @@ pub fn read_inputs(
         seen_libraries: HashSet::new(),
         seen_footprints: HashSet::new(),
         libraries: HashSet::new(),
+        models: models.clone(),
     };
     for (done, (path, kind)) in inputs.iter().enumerate() {
         let name = file_name(path);
@@ -176,7 +180,7 @@ impl Reader {
         self.libraries.insert(lib.to_string());
         let library_id = self.library_id;
         let ids = move |is_file: bool, fp: &str| footprint_id(library_id, lib, is_file, fp);
-        match read_pretty_dir(path, &ids) {
+        match read_pretty_dir(path, &ids, &self.models) {
             Ok(fps) => self.add_footprints(fps.found, fps.items, fps.files, lib, &name),
             Err(e) => {
                 let message = format!("{name}: {e}; its contents are not read");
@@ -190,7 +194,7 @@ impl Reader {
         self.libraries.insert(lib.to_string());
         let library_id = self.library_id;
         let ids = move |is_file: bool, fp: &str| footprint_id(library_id, lib, is_file, fp);
-        let fps = read_footprint_file(path, lib, &ids);
+        let fps = read_footprint_file(path, lib, &ids, &self.models);
         self.add_footprints(fps.found, fps.items, fps.files, lib, &name);
     }
 

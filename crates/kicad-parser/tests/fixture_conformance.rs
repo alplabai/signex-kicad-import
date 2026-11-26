@@ -27,8 +27,15 @@ fn the_layer_set_pads_match_the_fixture_rows() {
         .join("tests/fixtures/footprints/Special.pretty/Layers_Test.kicad_mod");
     let text = std::fs::read_to_string(source).expect("fixture");
     let mut items = Vec::new();
-    let file =
-        convert_footprint(&text, "Layers", &|_, n| n.to_string(), &mut items).expect("converts");
+    let file = convert_footprint(
+        &text,
+        "Layers",
+        &|_, n| n.to_string(),
+        &mut items,
+        &kicad_parser::models::ModelCx::default(),
+        Path::new("."),
+    )
+    .expect("converts");
     let got = write_footprint_file(&file);
     // The converter's footprint carries a castellated and a test-point pad the
     // fixture has not; the fixture's four rows must be among ours, as written.

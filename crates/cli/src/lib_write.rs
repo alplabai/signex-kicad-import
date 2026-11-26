@@ -157,6 +157,7 @@ pub fn build(
         let mut fp = fp.clone();
         emitter.progress(done, Some(total), &fp.footprint.name);
         written.footprints += 1;
+        written.models += fp.models.len();
         let rel = format!("footprints/{}.snxfpt", fp.footprint.uuid);
         if let Some(u) = update {
             let (uuid, version) = u.previous.apply_footprint(&rel, &mut fp, u.now);

@@ -12,6 +12,13 @@
 
 use std::path::{Path, PathBuf};
 
+mod contract;
+mod lib_cmd;
+mod lib_inputs;
+mod lib_read;
+mod lib_report;
+mod progress;
+
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use kicad_parser::placement_check::{EndTally, tally_track_ends};
@@ -49,6 +56,15 @@ struct Outcome {
 }
 
 fn main() {
+    // `describe` and `library` are the library converter contract; anything
+    // else is the board conversion, unchanged.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if matches!(
+        args.get(1).and_then(|a| a.to_str()),
+        Some("describe" | "library")
+    ) {
+        std::process::exit(lib_cmd::main_contract(args));
+    }
     let cli = Cli::parse();
     let result = run(&cli);
     if cli.json {

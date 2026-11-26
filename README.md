@@ -28,7 +28,12 @@ The summary lists what could not be carried over exactly (by kind and
 count) and a self-check: how many track ends land on a pad of their own
 net, and how many only on another net's pad, once Signex places the pads.
 
-Schematic and symbol conversion is not part of this release.
+Schematic conversion is not part of this release.
+
+For Signex's library converter contract, `signex-kicad-import describe --json`
+and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
+libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
+`library` command does not write a library yet.
 
 ## What the board conversion covers
 

@@ -23,6 +23,12 @@ anyhow = "1"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Source hashes in the library report
+sha2 = "0.10"
+
+# Tests: schema patterns
+regex = "1"
+
 # Tests: the writer's output is checked by parsing it back
 toml = "0.8"
 

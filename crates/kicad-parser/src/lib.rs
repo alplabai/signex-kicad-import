@@ -23,7 +23,9 @@ pub mod error;
 mod footprint;
 mod geometry;
 mod ids;
+pub mod items;
 mod layers;
+pub mod message_codes;
 mod nets;
 mod outline;
 mod pad_copper;
@@ -37,6 +39,7 @@ mod stackup;
 mod zones;
 
 pub use error::ParseError;
+pub use items::{Item, ItemKind, Severity};
 pub use pcb::{Converted, convert_pcb};
 pub use project::{ProjectRules, parse_project_rules};
 pub use report::Report;

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# The Signex checkout the library-format conformance tests read their fixtures
+# from. A pinned commit, set to the head of Signex's library converter batch for
+# now; move it to Signex trunk after that batch merges. The fixtures belong to
+# the Signex repository and are only read, never copied into this one.
+env:
+  SIGNEX_REF: fcd38279f471820809128a85fa88ea8227b1af3d
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Without SIGNEX_FORMAT_FIXTURES the conformance tests print a skip and pass.
+      - run: cargo test --workspace
+
+  conformance:
+    name: Conformance with Signex's library format fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: alplabai/signex
+          ref: ${{ env.SIGNEX_REF }}
+          path: signex
+          sparse-checkout: docs/fixtures/library-format
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+        env:
+          SIGNEX_FORMAT_FIXTURES: ${{ github.workspace }}/signex/docs/fixtures/library-format

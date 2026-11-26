@@ -496,4 +496,10 @@ fn row(
             Severity::Info,
             "part row written",
         )
-      
+        .with_id(&row_id),
+    );
+    row
+}
+
+#[cfg(test)]
+mod tests;

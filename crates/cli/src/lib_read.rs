@@ -39,6 +39,8 @@ pub struct Read {
     /// Libraries that were read this run without any error item: an update
     /// may delete what the earlier run wrote from them, and only from them.
     pub clean_libraries: HashSet<String>,
+    /// Every library a read was tried for (clean or not).
+    pub attempted_libraries: HashSet<String>,
 }
 
 struct Reader {
@@ -66,6 +68,7 @@ pub fn read_inputs(
             footprints: Vec::new(),
             footprint_libs: Vec::new(),
             clean_libraries: HashSet::new(),
+            attempted_libraries: HashSet::new(),
         },
         library_id,
         seen_libraries: HashSet::new(),
@@ -96,6 +99,7 @@ pub fn read_inputs(
         }
         emitter.progress(done + 1, Some(inputs.len()), &name);
     }
+    r.read.attempted_libraries.clone_from(&r.libraries);
     r.read.clean_libraries = r
         .libraries
         .difference(&r.failed_libraries())
@@ -306,7 +310,15 @@ impl Reader {
                 }),
                 Err(e) => {
                     // One unreadable library must not stop the others.
-                    let message = format!("{}: {e:#}; not converted", entry.name);
+                    // The resolved path stays out of the message (it may have come
+                    // from an environment variable); the error kind says enough.
+                    let why = e
+                        .downcast_ref::<std::io::Error>()
+                        .map_or_else(|| "cannot be read".to_string(), |io| io.kind().to_string());
+                    let message = format!(
+                        "{}: the library file could not be read ({why}); not converted",
+                        entry.name
+                    );
                     self.error(
                         ItemKind::Library,
                         &source,
@@ -330,3 +342,5 @@ impl Reader {
 pub fn footprint_id(library_id: Uuid, lib: &str, is_file: bool, name: &str) -> String {
     let kind = if is_file {
         "footprint-file"
+    } else {
+        "foo

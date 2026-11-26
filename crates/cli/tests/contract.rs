@@ -953,4 +953,124 @@ fn an_update_leaves_user_files_and_unreadable_libraries_alone_and_bumps_what_cha
     );
     assert_eq!(row("B").split('\t').nth(16), Some("1.0.0"));
 
-    // 
+    // B leaves the inputs altogether.
+    let r = run(&[
+        "library",
+        a.to_str().expect("utf8"),
+        "--output",
+        out,
+        "--library-id",
+        id,
+        "--name",
+        "L",
+        "--update",
+        "--json",
+    ]);
+    assert!(r.status.code() == Some(0) || r.status.code() == Some(2));
+    // Policy (snapshot, contract section 5): a library that is no longer an
+    // input is removed; one that is an input but failed to read (above) stays.
+    assert!(!out_dir.join("symbols/b.snxsym").exists());
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn an_update_removes_a_library_that_left_the_inputs_and_keeps_an_envelope_time_across_a_rename() {
+    let dir = scratch("lib-removed");
+    let (a, b) = (dir.join("A.kicad_sym"), dir.join("B.kicad_sym"));
+    std::fs::write(&a, TINY).expect("a");
+    std::fs::write(&b, TINY).expect("b");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let id = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    let go = |inputs: &[&std::path::Path], extra: &[&str]| {
+        let mut v: Vec<&str> = vec!["library"];
+        v.extend(inputs.iter().map(|p| p.to_str().expect("utf8")));
+        v.extend(["--output", out, "--library-id", id, "--name", "L", "--json"]);
+        v.extend(extra);
+        run(&v)
+    };
+    assert_eq!(go(&[&a, &b], &[]).status.code(), Some(0));
+    let created_of = |f: &str| {
+        let t: toml::Value =
+            toml::from_str(&std::fs::read_to_string(out_dir.join(f)).expect("f")).expect("toml");
+        t["created"].as_str().expect("created").to_string()
+    };
+    assert!(out_dir.join("symbols/b.snxsym").is_file());
+    // B leaves the inputs: its envelope and its rows go, and it is said so.
+    let r = go(&[&a], &["--update"]);
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(!out_dir.join("symbols/b.snxsym").exists());
+    assert!(out_dir.join("symbols/a.snxsym").is_file());
+    let report = report_of(&out_dir);
+    let codes: Vec<&str> = report["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"update.library_removed"), "{codes:?}");
+    let manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(out_dir.join("L.snxlib")).expect("m"))
+            .expect("toml");
+    assert!(
+        manifest["tables"]
+            .as_table()
+            .expect("tables")
+            .get("B")
+            .is_none()
+    );
+    let _ = created_of("symbols/a.snxsym");
+}
+
+#[test]
+fn a_report_that_lists_paths_outside_the_library_makes_an_update_delete_nothing() {
+    let dir = scratch("lib-crafted");
+    let a = dir.join("A.kicad_sym");
+    let b = dir.join("B.kicad_sym");
+    std::fs::write(&a, TINY).expect("a");
+    std::fs::write(&b, TINY).expect("b");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let id = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    let args = |inputs: &[&std::path::Path], extra: &[&str]| {
+        let mut v: Vec<&str> = vec!["library"];
+        v.extend(inputs.iter().map(|p| p.to_str().expect("utf8")));
+        v.extend(["--output", out, "--library-id", id, "--name", "L", "--json"]);
+        v.extend(extra);
+        run(&v)
+    };
+    assert_eq!(args(&[&a, &b], &[]).status.code(), Some(0));
+    std::fs::write(dir.join("victim"), "victim").expect("v");
+    let path = out_dir.join("import-report.json");
+    let mut report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("r")).expect("json");
+    report["files"]
+        .as_array_mut()
+        .expect("files")
+        .push(json!("../victim"));
+    std::fs::write(&path, report.to_string()).expect("r");
+    // B leaves the inputs, which would delete its files, but the report is not trusted.
+    let r = args(&[&a], &["--update"]);
+    assert!(r.status.code() == Some(0) || r.status.code() == Some(2));
+    assert_eq!(std::fs::read(dir.join("victim")).expect("v"), b"victim");
+    assert!(
+        out_dir.join("symbols/b.snxsym").is_file(),
+        "nothing is deleted when an entry is bad"
+    );
+    let codes: Vec<String> = report_of(&out_dir)["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        codes.contains(&"update.report_entry_ignored".to_string()),
+        "{codes:?}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

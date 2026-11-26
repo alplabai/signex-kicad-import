@@ -572,10 +572,13 @@ fn pad(p: &BoardPad, margins: Margins, sink: &mut Sink<'_>) -> Option<out::Pad> 
             sink.note_once(
                 "pad.slot_not_placeable",
                 Severity::Approximated,
-                "Signex cannot place slotted drills on boards yet; the slot is written exactly",
+                "Signex cannot place this footprint on a board until slotted drills are supported; the footprint is written exactly",
             );
             if s.y > s.x {
-                if matches!(p.shape, PadShape::Circle | PadShape::Rect | PadShape::Oval | PadShape::RoundRect(_)) {
+                if matches!(
+                    p.shape,
+                    PadShape::Circle | PadShape::Rect | PadShape::Oval | PadShape::RoundRect(_)
+                ) {
                     size = [size[1], size[0]];
                     rotation = (rotation + 90.0).rem_euclid(360.0);
                 } else {

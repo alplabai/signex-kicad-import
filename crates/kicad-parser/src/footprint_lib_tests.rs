@@ -347,4 +347,6 @@ fn footprint_level_margins_are_inherited_and_ratios_reported() {
 
 #[test]
 fn a_bottom_side_footprint_is_refused() {
-    let (file, _) = special("Bottom_Test.
+    let (file, _) = special("Bottom_Test.kicad_mod");
+    assert!(file.is_err_and(|e| e.to_string().contains("bottom side")));
+}

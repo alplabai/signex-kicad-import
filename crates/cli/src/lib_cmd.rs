@@ -199,7 +199,7 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
     // read cleanly this run; the rest of the folder is not touched.
     let stale = previous
         .as_ref()
-        .map(|p| p.stale(&keep, &read.clean_libraries))
+        .map(|p| p.stale(&keep, &read.clean_libraries, &read.attempted_libraries))
         .unwrap_or_default();
     report.files = match &previous {
         Some(p) => p.files_after(&keep, &stale),
@@ -297,3 +297,9 @@ fn check_update_target(out: &std::path::Path, library_id: uuid::Uuid) -> Result<
 #[cfg(debug_assertions)]
 pub fn test_panic(point: &str) {
     if std::env::var("SIGNEX_KICAD_IMPORT_TEST_PANIC").is_ok_and(|v| v == point) {
+        panic!("test panic at {point}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub fn test_panic(_point: &str) {}

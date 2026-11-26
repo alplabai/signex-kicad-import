@@ -26,7 +26,11 @@ impl Staging {
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let dir = out.with_file_name(format!(".{name}.tmp-import"));
-        if dir.exists() {
+        if let Ok(meta) = std::fs::symlink_metadata(&dir) {
+            if !meta.is_dir() {
+                anyhow::bail!("{} is not a plain folder; remove it", dir.display());
+            }
+            ensure_ours(&dir, &meta)?;
             // A run that died while committing left what it had moved aside
             // in `.backup`: put it back before clearing the folder.
             restore_backup(&dir.join(".backup"), out)?;
@@ -85,13 +89,28 @@ impl Staging {
         saved: &mut Vec<PathBuf>,
     ) -> Result<()> {
         let save = |rel: &Path, saved: &mut Vec<PathBuf>| -> Result<()> {
+            if !plain_relative(rel) {
+                anyhow::bail!("refusing the path {}", rel.display());
+            }
             let target = self.out.join(rel);
-            if !target.exists() {
-                return Ok(());
+            // Only a regular file is moved; a link, a folder or nothing is left alone.
+            match std::fs::symlink_metadata(&target) {
+                Ok(m) if m.is_file() => {}
+                _ => return Ok(()),
             }
             let to = backup.join(rel);
             if let Some(parent) = to.parent() {
                 std::fs::create_dir_all(parent)?;
+            }
+            // Written before the move, so a crash can always find what was moved.
+            {
+                use std::io::Write as _;
+                let mut m = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(backup.join(MANIFEST))?;
+                writeln!(m, "{}", rel.display())?;
+                m.sync_all()?;
             }
             std::fs::rename(&target, &to)
                 .with_context(|| format!("backing up {}", target.display()))?;
@@ -116,26 +135,54 @@ impl Staging {
     }
 }
 
-/// Move every file under `backup` back to the same relative path in `out`.
-fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
-    fn walk(dir: &Path, base: &Path, out: &Path) -> Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                walk(&path, base, out)?;
-            } else if let Ok(rel) = path.strip_prefix(base) {
-                let target = out.join(rel);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::rename(&path, &target)
-                    .with_context(|| format!("restoring {}", target.display()))?;
-            }
-        }
-        Ok(())
+const MANIFEST: &str = "MANIFEST";
+
+/// A relative path made only of plain names: no `..`, root or prefix.
+fn plain_relative(rel: &Path) -> bool {
+    rel.components().count() > 0
+        && rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Refuse a staging folder that belongs to someone else (unix).
+#[cfg(unix)]
+fn ensure_ours(dir: &Path, meta: &std::fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").map(|m| m.uid()).ok();
+    if me.is_some_and(|me| me != meta.uid()) {
+        anyhow::bail!("{} is owned by another user; remove it", dir.display());
     }
-    if backup.is_dir() {
-        walk(backup, backup, out)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_ours(_dir: &Path, _meta: &std::fs::Metadata) -> Result<()> {
+    Ok(())
+}
+
+/// Move back the files a crashed commit moved aside: only those its own
+/// manifest lists, only as plain relative paths, and only regular files (a
+/// link, even one planted in the folder, is never followed or moved).
+fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
+    let Ok(list) = std::fs::read_to_string(backup.join(MANIFEST)) else {
+        return Ok(());
+    };
+    for line in list.lines() {
+        let rel = Path::new(line);
+        if !plain_relative(rel) {
+            continue;
+        }
+        let from = backup.join(rel);
+        if !std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let target = out.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&from, &target)
+            .with_context(|| format!("restoring {}", target.display()))?;
     }
     Ok(())
 }
@@ -232,10 +279,51 @@ mod tests {
         let leftover = base.join(".lib.tmp-import/.backup/symbols");
         std::fs::create_dir_all(&leftover).expect("backup");
         std::fs::write(leftover.join("a.snxsym"), "precious").expect("f");
+        std::fs::write(
+            base.join(".lib.tmp-import/.backup/MANIFEST"),
+            "symbols/a.snxsym\n",
+        )
+        .expect("m");
         let _stage = Staging::new(&out).expect("stage");
         assert_eq!(
             std::fs::read(out.join("symbols/a.snxsym")).expect("restored"),
             b"precious"
         );
         assert!(!base.join(".lib.tmp-import/.backup").exists());
-        std::fs::remove_dir_all(
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_or_an_unlisted_file_in_a_backup_is_never_moved() {
+        let base = tmp("planted");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::write(base.join("outside"), "outside").expect("f");
+        let backup = base.join(".lib.tmp-import/.backup/symbols");
+        std::fs::create_dir_all(&backup).expect("backup");
+        std::os::unix::fs::symlink(base.join("outside"), backup.join("link.snxsym")).expect("link");
+        std::fs::write(backup.join("unlisted.snxsym"), "x").expect("f");
+        std::fs::write(
+            base.join(".lib.tmp-import/.backup/MANIFEST"),
+            "symbols/link.snxsym\n../outside\n/etc/passwd\n",
+        )
+        .expect("m");
+        let _stage = Staging::new(&out).expect("stage");
+        assert_eq!(std::fs::read(base.join("outside")).expect("f"), b"outside");
+        assert!(!out.join("symbols/link.snxsym").exists());
+        assert!(!out.join("symbols/unlisted.snxsym").exists());
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_path_that_is_a_link_is_refused() {
+        let base = tmp("linkdir");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::create_dir_all(base.join("elsewhere")).expect("d");
+        std::os::unix::fs::symlink(base.join("elsewhere"), base.join(".lib.tmp-import"))
+            .expect("link");
+        assert!(Staging::new(&out).is_err());
+        assert!(base.join("elsewh

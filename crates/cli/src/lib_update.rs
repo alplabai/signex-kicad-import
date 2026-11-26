@@ -43,11 +43,23 @@ pub struct Previous {
     symbols: HashMap<String, toml::Table>,
     footprints: HashMap<String, toml::Table>,
     envelopes: HashMap<String, toml::Table>,
+    /// The same envelopes by their `file_uuid`, so a renamed file is found.
+    envelopes_by_uuid: HashMap<String, toml::Table>,
+    /// Root manifests found (relative names).
+    manifests: Vec<String>,
+    /// Entries of the earlier report that were not trusted.
+    pub ignored: Vec<String>,
+    /// An untrusted entry was found: this run deletes nothing.
+    tainted: bool,
     rows: Vec<OldEntry>,
     classes: Vec<(String, String)>,
 }
 
 fn read_toml(path: &Path) -> Option<toml::Table> {
+    // A link is never followed: only a regular file is read.
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
     toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
@@ -66,21 +78,26 @@ fn text<'a>(t: &'a toml::Table, key: &str) -> &'a str {
 impl Previous {
     pub fn load(out: &Path) -> Previous {
         let mut p = Previous::default();
+        let mut claimed: Vec<String> = Vec::new();
         if let Ok(text) = std::fs::read_to_string(out.join("import-report.json"))
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
         {
-            for f in v["files"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|f| f.as_str())
-            {
-                p.files.push(f.to_string());
-            }
-            for (f, l) in v["file_libraries"].as_object().into_iter().flatten() {
-                if let Some(l) = l.as_str() {
-                    p.file_libs.insert(f.clone(), l.to_string());
+            if v["converter"] == "signex-kicad-import" {
+                claimed = v["files"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect();
+                for (f, l) in v["file_libraries"].as_object().into_iter().flatten() {
+                    if let Some(l) = l.as_str() {
+                        p.file_libs.insert(f.clone(), l.to_string());
+                    }
                 }
+            } else {
+                p.ignored
+                    .push("import-report.json is not from this converter".to_string());
+                p.tainted = true;
             }
         }
         for (dir, ext) in [("symbols", "snxsym"), ("footprints", "snxfpt")] {
@@ -116,6 +133,9 @@ impl Previous {
                         map.insert(text(t, "uuid").to_string(), t.clone());
                     }
                 }
+                if let Some(u) = doc.get("file_uuid").and_then(toml::Value::as_str) {
+                    p.envelopes_by_uuid.insert(u.to_string(), doc.clone());
+                }
                 p.envelopes.insert(rel, doc);
             }
         }
@@ -124,11 +144,89 @@ impl Previous {
                 if e.path().extension().is_some_and(|x| x == "snxlib")
                     && let Some(doc) = read_toml(&e.path())
                 {
+                    p.manifests
+                        .push(e.file_name().to_string_lossy().into_owned());
                     p.read_manifest(&doc);
                 }
             }
         }
+        // Only entries that are exactly what the converter writes, found
+        // where the folder says, as regular files of a kind that matches
+        // their name, are ever deleted. One bad entry stops all deletion.
+        for f in claimed {
+            if p.trusted(out, &f) {
+                p.files.push(f);
+            } else {
+                p.ignored.push(f);
+                p.tainted = true;
+            }
+        }
         p
+    }
+
+    /// Whether a path the earlier report lists may be touched.
+    fn trusted(&self, out: &Path, f: &str) -> bool {
+        let rel = Path::new(f);
+        let parts: Vec<&std::ffi::OsStr> = rel
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        if parts.len() != rel.components().count() || f.contains('\\') {
+            return false;
+        }
+        let name = |i: usize| parts.get(i).and_then(|n| n.to_str()).unwrap_or("");
+        let shape = match parts.len() {
+            1 => name(0).ends_with(".snxlib") && name(0).len() > ".snxlib".len(),
+            2 => match name(0) {
+                "symbols" => name(1).ends_with(".snxsym") && name(1).len() > ".snxsym".len(),
+                "footprints" => name(1)
+                    .strip_suffix(".snxfpt")
+                    .is_some_and(|u| uuid::Uuid::parse_str(u).is_ok()),
+                _ => false,
+            },
+            _ => false,
+        };
+        if !shape {
+            return false;
+        }
+        // A file that is there must be a regular file, in a real folder inside
+        // the output; one that is not there is harmless.
+        if parts.len() == 2 {
+            let dir = out.join(name(0));
+            if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+                return false;
+            }
+            match (dir.canonicalize(), out.canonicalize()) {
+                (Ok(d), Ok(o)) if d.starts_with(&o) => {}
+                _ => return false,
+            }
+        }
+        match std::fs::symlink_metadata(out.join(rel)) {
+            Ok(m) if !m.is_file() => return false,
+            Err(_) => return true,
+            Ok(_) => {}
+        }
+        // What the file holds must match its name and kind.
+        match (parts.len(), name(0)) {
+            (1, _) => self.manifests.iter().any(|m| m == f),
+            (_, "symbols") => self
+                .envelopes
+                .get(f)
+                .is_some_and(|e| e.contains_key("symbols")),
+            _ => {
+                let stem = name(1).trim_end_matches(".snxfpt");
+                self.envelopes.get(f).is_some_and(|e| {
+                    e.get("footprints")
+                        .and_then(toml::Value::as_array)
+                        .and_then(|a| a.first())
+                        .and_then(toml::Value::as_table)
+                        .is_some_and(|t| text(t, "uuid") == stem)
+                })
+            }
+        }
     }
 
     fn read_manifest(&mut self, doc: &toml::Table) {
@@ -231,7 +329,11 @@ impl Previous {
             }
             versions.insert(s.uuid.clone(), s.version.clone());
         }
-        if let Some(old) = self.envelopes.get(rel) {
+        if let Some(old) = self
+            .envelopes
+            .get(rel)
+            .or_else(|| self.envelopes_by_uuid.get(&file.file_uuid))
+        {
             file.created = text(old, "created").to_string();
             let old_count = old
                 .get("symbols")
@@ -286,13 +388,27 @@ impl Previous {
     }
 
     /// Files the previous run wrote that this run does not, and may delete:
-    /// not user files, and not those of a library that was not read cleanly.
-    pub fn stale(&self, keep: &[String], clean: &HashSet<String>) -> Vec<PathBuf> {
+    /// only those the report names with a source library, when that library
+    /// was read cleanly this run or is no longer an input; the root manifest
+    /// is rewritten, so an older one under another name goes. Nothing at all
+    /// when the report held an entry that could not be trusted.
+    pub fn stale(
+        &self,
+        keep: &[String],
+        clean: &HashSet<String>,
+        attempted: &HashSet<String>,
+    ) -> Vec<PathBuf> {
+        if self.tainted {
+            return Vec::new();
+        }
         let mut stale: Vec<PathBuf> = self
             .files
             .iter()
             .filter(|f| !keep.contains(f))
-            .filter(|f| self.file_libs.get(*f).is_none_or(|lib| clean.contains(lib)))
+            .filter(|f| match self.file_libs.get(*f) {
+                Some(lib) => clean.contains(lib) || !attempted.contains(lib),
+                None => !f.contains('/'),
+            })
             .map(PathBuf::from)
             .collect();
         stale.sort();
@@ -322,6 +438,7 @@ impl Previous {
     pub fn carry_over(
         &self,
         clean: &HashSet<String>,
+        attempted: &HashSet<String>,
         tables: &mut Vec<Table>,
         classes: &mut Vec<Class>,
         items: &mut Vec<Item>,
@@ -330,6 +447,11 @@ impl Previous {
         for r in &self.rows {
             let lib = r.internal_pn.split(':').next().unwrap_or("");
             if clean.contains(lib) {
+                continue;
+            }
+            // A library that is no longer an input is removed with its rows
+            // (an update is a snapshot), unless the report could not be trusted.
+            if !attempted.contains(lib) && !self.tainted {
                 continue;
             }
             if !kept_libs.contains(&lib) {
@@ -359,6 +481,33 @@ impl Previous {
                     label,
                 });
             }
+        }
+        let mut removed: Vec<&str> = self
+            .rows
+            .iter()
+            .map(|r| r.internal_pn.split(':').next().unwrap_or(""))
+            .chain(self.file_libs.values().map(String::as_str))
+            .filter(|l| !attempted.contains(*l))
+            .collect();
+        removed.sort_unstable();
+        removed.dedup();
+        for lib in removed.into_iter().filter(|_| !self.tainted) {
+            items.push(Item::new(
+                ItemKind::Library,
+                lib,
+                "update.library_removed",
+                Severity::Info,
+                format!("{lib} is no longer an input; its earlier files and part rows are removed"),
+            ));
+        }
+        for item in &self.ignored {
+            items.push(Item::new(
+                ItemKind::Library,
+                item,
+                "update.report_entry_ignored",
+                Severity::Info,
+                "an entry of the earlier report is not one this converter writes; nothing was deleted in this run",
+            ));
         }
         for lib in kept_libs {
             items.push(Item::new(
@@ -403,7 +552,8 @@ mod tests {
             "footprints/x.snxfpt".to_string(),
         ];
         let clean: HashSet<String> = ["A".to_string()].into();
-        let stale = p.stale(&keep, &clean);
+        let attempted: HashSet<String> = ["A".to_string(), "B".to_string()].into();
+        let stale = p.stale(&keep, &clean, &attempted);
         // B failed to read this run: its file stays. The manifest is rewritten under a new name.
         assert_eq!(
             stale,
@@ -422,4 +572,74 @@ mod tests {
             ]
         );
     }
-}
+
+    #[test]
+    fn a_removed_library_is_deleted_and_an_entry_without_a_library_never_is() {
+        let mut p = prev_with(&[
+            ("symbols/gone.snxsym", "Gone"),
+            ("symbols/stray.snxsym", ""),
+            ("Old.snxlib", ""),
+        ]);
+        let none: HashSet<String> = HashSet::new();
+        assert_eq!(
+            p.stale(&[], &none, &none),
+            [
+                PathBuf::from("Old.snxlib"),
+                PathBuf::from("symbols/gone.snxsym")
+            ]
+        );
+        p.tainted = true;
+        assert!(p.stale(&[], &none, &none).is_empty());
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("snx-upd-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("dir");
+        d
+    }
+
+    #[test]
+    fn a_crafted_report_cannot_make_an_update_delete_outside_the_library() {
+        let base = scratch("crafted");
+        let out = base.join("lib");
+        std::fs::create_dir_all(out.join("symbols")).expect("d");
+        std::fs::write(base.join("victim"), "victim").expect("f");
+        std::fs::write(base.join("victim2"), "victim2").expect("f");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("victim2"), out.join("symbols/link.snxsym"))
+            .expect("link");
+        let report = serde_json::json!({
+            "converter": "signex-kicad-import",
+            "files": ["../victim", base.join("victim2").display().to_string(), "symbols/link.snxsym", "symbols/../../victim", "other/x.snxsym", "symbols/a.txt"],
+            "file_libraries": {"../victim": "L", "symbols/link.snxsym": "L"},
+        });
+        std::fs::write(out.join("import-report.json"), report.to_string()).expect("report");
+        let p = Previous::load(&out);
+        assert!(p.files.is_empty(), "{:?}", p.files);
+        assert_eq!(p.ignored.len(), 6);
+        let all: HashSet<String> = ["L".to_string()].into();
+        assert!(p.stale(&[], &all, &all).is_empty());
+        assert_eq!(std::fs::read(base.join("victim")).expect("v"), b"victim");
+        assert_eq!(std::fs::read(base.join("victim2")).expect("v"), b"victim2");
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[test]
+    fn a_report_from_another_converter_is_not_trusted_and_a_good_one_is() {
+        let base = scratch("converter");
+        let out = base.join("lib");
+        std::fs::create_dir_all(out.join("symbols")).expect("d");
+        let env = "format = \"snxsym/v1\"\nfile_uuid = \"u\"\n[[symbols]]\nuuid = \"s\"\n";
+        std::fs::write(out.join("symbols/a.snxsym"), env).expect("f");
+        let write = |converter: &str| {
+            let report = serde_json::json!({"converter": converter, "files": ["symbols/a.snxsym"], "file_libraries": {"symbols/a.snxsym": "A"}});
+            std::fs::write(out.join("import-report.json"), report.to_string()).expect("report");
+            Previous::load(&out)
+        };
+        let bad = write("something-else");
+        assert!(bad.files.is_empty() && bad.tainted);
+        let good = write("signex-kicad-import");
+        assert_eq!(good.files, ["symbols/a.snxsym"]);
+        assert!(!good.tainted);
+      

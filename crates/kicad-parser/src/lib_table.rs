@@ -193,7 +193,11 @@ pub fn resolve_entry_noted(
     let base = entry.uri.rsplit(['/', '\\']).next().unwrap_or("");
     for dir in search {
         for candidate in [tail, base] {
-            if !candidate.is_empty() && dir.join(candidate).exists() {
+            // A table must not reach outside the folder the user named.
+            let plain = Path::new(candidate)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)));
+            if plain && !candidate.is_empty() && dir.join(candidate).exists() {
                 return Ok(Resolved {
                     path: dir.join(candidate),
                     substituted_for: Some(entry.uri.clone()),
@@ -355,6 +359,28 @@ mod tests {
     }
 
     #[test]
+    fn a_search_fallback_cannot_climb_out_of_its_folder() {
+        let proj = dir("climb");
+        let shared = dir("climb-shared");
+        std::fs::write(proj.join("secret.kicad_sym"), "").expect("f");
+        let none = |_: &str| None;
+        let entry = TableEntry {
+            name: "L".into(),
+            kind: "KiCad".into(),
+            uri: "${NOPE}/../secret.kicad_sym".into(),
+            options: String::new(),
+            descr: String::new(),
+            disabled: false,
+        };
+        let sub = shared.join("inner");
+        std::fs::create_dir_all(&sub).expect("d");
+        std::fs::write(shared.join("secret.kicad_sym"), "").expect("f");
+        let err = resolve_entry(&entry, &proj, std::slice::from_ref(&sub), &none, &[])
+            .expect_err("refused");
+        assert!(err.contains("${NOPE}/../secret.kicad_sym"));
+    }
+
+    #[test]
     fn the_search_folder_stands_in_only_for_an_unresolved_variable() {
         let proj = dir("subst");
         let shared = dir("subst-shared");
@@ -416,4 +442,9 @@ mod tests {
             resolve_entry(&t.entries[0], &proj, &[], &env, &[]),
             Ok(shared.join("Device.kicad_sym"))
         );
-        // A path that do
+        // A path that does not exist is an error naming it.
+        assert!(
+            resolve_entry(&t.entries[2], &proj, &[], &none, &[])
+                .expect_err("missing")
+                .contains("old.lib")
+      

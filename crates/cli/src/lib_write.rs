@@ -172,6 +172,7 @@ pub fn build(
     if let Some(u) = update {
         u.previous.carry_over(
             &read.clean_libraries,
+            &read.attempted_libraries,
             &mut parts.tables,
             &mut parts.classes,
             &mut parts.items,
@@ -208,4 +209,7 @@ mod tests {
         assert_eq!(slug("Conformance Symbols"), "conformance-symbols");
         assert_eq!(slug("--A__b--"), "a-b");
         assert_eq!(slug("日本"), "untitled");
-        assert_eq!(manifest_name("A/B:C"), "A_B_C.snxl
+        assert_eq!(manifest_name("A/B:C"), "A_B_C.snxlib");
+        assert_eq!(manifest_name("  "), "library.snxlib");
+    }
+}

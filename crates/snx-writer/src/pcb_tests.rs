@@ -35,6 +35,8 @@ fn sample() -> Board {
         }),
         solder_mask_margin: None,
         paste_margin: None,
+        drill_slot: None,
+        property: String::new(),
     };
     let square = vec![
         Point::new(-0.5, -0.5),

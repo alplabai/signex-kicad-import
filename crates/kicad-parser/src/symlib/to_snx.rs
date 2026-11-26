@@ -126,7 +126,7 @@ fn symbol(s: &Symbol, units: &[Unit], uuid: String, n: &mut Notes<'_>) -> SSym {
     }
     let mut pins = Vec::new();
     let mut graphics = Vec::new();
-    let mut part_count = 1;
+    let mut part_count: u8 = 1;
     for u in units {
         let Some(style) = body_style(u.style) else {
             n.note(
@@ -136,8 +136,16 @@ fn symbol(s: &Symbol, units: &[Unit], uuid: String, n: &mut Notes<'_>) -> SSym {
             );
             continue;
         };
-        part_count = part_count.max(u.unit);
-        let unit = u8::try_from(u.unit).unwrap_or(u8::MAX);
+        // Signex stores the unit as one byte: a higher unit cannot be written.
+        let Ok(unit) = u8::try_from(u.unit) else {
+            n.note(
+                "symbol.unit_dropped",
+                Severity::Dropped,
+                "unit above 255 dropped; Signex symbols hold at most 255 units",
+            );
+            continue;
+        };
+        part_count = part_count.max(unit);
         for p in &u.pins {
             pins.push(pin(s, p, unit, style, n));
         }
@@ -220,33 +228,40 @@ fn electrical(t: PinType, n: &mut Notes<'_>) -> &'static str {
     }
 }
 
-/// Which of the four decoration columns (inside, inside edge, outside edge,
-/// outside) carries what. The format lists the tokens but not which column
-/// takes which; this follows the usual symbol conventions (a bubble and an
-/// active-low marker on the outside edge, the clock wedge on the inside edge).
+/// The pin's decoration. Signex reads one column, the outside edge, for the
+/// symbols a schematic draws (the other three columns are written as `None`),
+/// so a KiCad style that combines a marker with a clock wedge keeps the
+/// marker and reports the loss.
 fn decorations(style: PinStyle, n: &mut Notes<'_>) -> [&'static str; 4] {
-    let mut d = ["None"; 4];
-    match style {
-        PinStyle::Line => {}
-        PinStyle::Inverted => d[2] = "Dot",
-        PinStyle::Clock => d[1] = "ClockEdge",
+    let outside_edge = match style {
+        PinStyle::Line => "None",
+        PinStyle::Inverted => "Dot",
+        PinStyle::Clock => "ClockEdge",
+        PinStyle::InputLow => "ActiveLowInput",
+        PinStyle::OutputLow => "ActiveLowOutput",
         PinStyle::InvertedClock => {
-            d[1] = "ClockEdge";
-            d[2] = "Dot";
+            n.note(
+                "symbol.pin_style_approximated",
+                Severity::Approximated,
+                "pin style inverted_clock written as an inverted pin; the clock wedge is lost",
+            );
+            "Dot"
         }
-        PinStyle::InputLow => d[2] = "ActiveLowInput",
-        PinStyle::OutputLow => d[2] = "ActiveLowOutput",
         PinStyle::ClockLow => {
-            d[1] = "ClockEdge";
-            d[2] = "ActiveLowInput";
+            n.note(
+                "symbol.pin_style_approximated",
+                Severity::Approximated,
+                "pin style clock_low written as an active-low input; the clock wedge is lost",
+            );
+            "ActiveLowInput"
         }
         PinStyle::EdgeClockHigh => {
-            d[1] = "ClockEdge";
             n.note(
                 "symbol.pin_style_approximated",
                 Severity::Approximated,
                 "pin style edge_clock_high written as a plain clock",
             );
+            "ClockEdge"
         }
         PinStyle::NonLogic => {
             n.note(
@@ -254,9 +269,10 @@ fn decorations(style: PinStyle, n: &mut Notes<'_>) -> [&'static str; 4] {
                 Severity::Approximated,
                 "pin style non_logic written as a plain pin",
             );
+            "None"
         }
-    }
-    d
+    };
+    ["None", "None", outside_edge, "None"]
 }
 
 fn orientation(angle: f64, n: &mut Notes<'_>) -> Orientation {
@@ -328,6 +344,17 @@ fn rgba(c: [f64; 4]) -> [u8; 4] {
         byte(c[2]),
         byte((c[3] * 255.0).round()),
     ]
+}
+
+/// A fill on a shape that cannot take one is dropped and reported.
+fn lost_fill(f: Fill, n: &mut Notes<'_>) {
+    if f != Fill::None {
+        n.note(
+            "symbol.fill_dropped",
+            Severity::Dropped,
+            "fill on a shape Signex cannot fill (open polyline, arc, bezier) dropped",
+        );
+    }
 }
 
 fn fill(f: Fill, n: &mut Notes<'_>) -> Option<[u8; 4]> {
@@ -403,15 +430,27 @@ fn graphic(g: &Graphic, unit: u8, style: u8, n: &mut Notes<'_>) -> Vec<G> {
             stroke,
             fill: f,
         } => match arc(*start, *mid, *end) {
-            Some(kind) => vec![make(stroke.width, fill(*f, n), kind)],
-            None => vec![make(
-                stroke.width,
-                None,
-                K::Line {
-                    from: pt(*start),
-                    to: pt(*end),
-                },
-            )],
+            Some(kind) => {
+                // An arc is not a closed shape: a fill on it cannot be written.
+                lost_fill(*f, n);
+                vec![make(stroke.width, None, kind)]
+            }
+            None => {
+                n.note(
+                    "symbol.arc_degenerate",
+                    Severity::Approximated,
+                    "arc through collinear points written as a line",
+                );
+                lost_fill(*f, n);
+                vec![make(
+                    stroke.width,
+                    None,
+                    K::Line {
+                        from: pt(*start),
+                        to: pt(*end),
+                    },
+                )]
+            }
         },
         Graphic::Polyline {
             points,
@@ -423,6 +462,7 @@ fn graphic(g: &Graphic, unit: u8, style: u8, n: &mut Notes<'_>) -> Vec<G> {
                 let vertices = points[..points.len() - 1].iter().map(|p| pt(*p)).collect();
                 vec![make(stroke.width, fill(*f, n), K::Polygon { vertices })]
             } else {
+                lost_fill(*f, n);
                 points
                     .windows(2)
                     .map(|w| {
@@ -443,9 +483,11 @@ fn graphic(g: &Graphic, unit: u8, style: u8, n: &mut Notes<'_>) -> Vec<G> {
             stroke,
             fill: f,
         } => {
+            // Signex never fills a bezier.
+            lost_fill(*f, n);
             vec![make(
                 stroke.width,
-                fill(*f, n),
+                None,
                 K::Bezier {
                     points: points.iter().map(|p| pt(*p)).collect(),
                 },

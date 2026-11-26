@@ -15,7 +15,7 @@ use crate::lib_read::read_inputs;
 use crate::lib_report::{LibraryReport, Source, now_utc};
 use crate::lib_write::build;
 use crate::progress::{Emitter, HEARTBEAT};
-use crate::staging::Staging;
+use crate::staging::{Staging, stale_files};
 use kicad_parser::libids::library_id;
 
 #[derive(Parser, Debug)]
@@ -186,8 +186,14 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             stage.write(rel, bytes)?;
         }
         test_panic("write");
-        let placed = stage.commit(args.update)?;
-        Ok(placed)
+        // An update also removes the items of the earlier run that left the source.
+        let stale = if args.update {
+            let keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
+            stale_files(&out, &keep)
+        } else {
+            Vec::new()
+        };
+        Ok(stage.commit(&stale)?)
     })();
     match staged {
         Ok(files) => {

@@ -314,7 +314,6 @@ fn a_footprint_with_a_pin_one_marker_matches_the_fixture_byte_for_byte() {
             radius: 0.1,
         },
     )];
-    f.body.height_mm = 1.0;
     let file = FootprintFile {
         file_uuid: "01940000-0000-7000-8000-000000000033".into(),
         display_name: "SOT-23".into(),

@@ -56,7 +56,7 @@ pub struct Body3d {
 impl Default for Body3d {
     fn default() -> Self {
         Body3d {
-            height_mm: 0.6,
+            height_mm: 1.0,
             offset_z_mm: 0.0,
             top_color: [0.2, 0.2, 0.2, 1.0],
             side_color: [0.3, 0.3, 0.3, 1.0],

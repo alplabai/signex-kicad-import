@@ -25,6 +25,7 @@ use snx_writer::model::{
 
 use crate::error::ParseError;
 use crate::footprint::{Context, convert};
+use crate::geometry::number_of;
 use crate::ids::Ids;
 use crate::items::{Item, ItemKind, Severity};
 use crate::layers::Stack;
@@ -103,7 +104,7 @@ fn read_file_into(path: &Path, library: &str, ids: IdOf<'_>, read: &mut Footprin
                     ItemKind::Footprint,
                     format!("{library}:{name}"),
                     "footprint.invalid_utf8",
-                    Severity::Info,
+                    Severity::Approximated,
                     format!("{name} is not valid UTF-8; unreadable bytes replaced"),
                 ));
             }
@@ -172,6 +173,19 @@ pub fn convert_footprint(
     {
         children.push(sexpr::parse("(at 0 0)")?);
     }
+    // A footprint drawn on the bottom side is stored flipped; turning it back
+    // to a library-side-up top footprint needs the pad and text turns of a
+    // mirrored footprint, which the format's frame rules do not pin down for
+    // a standalone file. It is refused rather than guessed.
+    if root
+        .find("layer")
+        .and_then(SExpr::first_arg)
+        .is_some_and(|l| matches!(l, "B.Cu" | "B.Cu "))
+    {
+        return Err(ParseError::InvalidValue(
+            "footprint on the bottom side (B.Cu) is not converted; save it on F.Cu".into(),
+        ));
+    }
     let name = root.first_arg().unwrap_or("").to_string();
     if name.is_empty() {
         return Err(ParseError::MissingField("footprint name".into()));
@@ -193,13 +207,15 @@ pub fn convert_footprint(
     let board =
         converted.ok_or_else(|| ParseError::InvalidValue("footprint does not read".into()))?;
     let mut sink = Sink {
-        source: &source,
         items,
         counts: Vec::new(),
     };
     // Board messages become items; the model note is replaced by the deferred one.
     for item in report.items(ItemKind::Footprint, &source) {
-        if item.code != "footprint.model_dropped" {
+        if !matches!(
+            item.code.as_str(),
+            "footprint.model_dropped" | "pad.slot_approximated"
+        ) {
             sink.items.push(item);
         }
     }
@@ -223,7 +239,26 @@ pub fn convert_footprint(
             "footprint zone dropped; the library footprint holds no copper pours",
         );
     }
-    let mut f = adapt(&board, &mut sink);
+    let margins = Margins {
+        mask: number_of(&root, "solder_mask_margin"),
+        paste: number_of(&root, "solder_paste_margin"),
+    };
+    let ratio_pads = root
+        .find_all("pad")
+        .into_iter()
+        .filter(|p| {
+            p.find("solder_paste_margin_ratio").is_some()
+                || root.find("solder_paste_ratio").is_some()
+        })
+        .count();
+    for _ in 0..ratio_pads {
+        sink.note(
+            "pad.paste_ratio_not_carried",
+            Severity::Approximated,
+            "paste ratio has no Signex field; the paste aperture is the pad size",
+        );
+    }
+    let mut f = adapt(&board, margins, &mut sink);
     f.uuid = ids(false, &name);
     f.name = name.clone();
     let descr = root.find("descr").and_then(SExpr::first_arg).unwrap_or("");
@@ -294,7 +329,6 @@ fn apply_attr(root: &SExpr, f: &mut out::Footprint, sink: &mut Sink<'_>) {
 
 /// Items of one footprint, counted by code.
 struct Sink<'a> {
-    source: &'a str,
     items: &'a mut Vec<Item>,
     counts: Vec<(&'static str, Severity, &'static str, usize)>,
 }
@@ -314,15 +348,25 @@ impl Sink<'_> {
                     .with_detail(json!({ "count": count })),
             );
         }
-        let _ = self.source;
     }
 }
 
-fn adapt(b: &BoardFootprint, sink: &mut Sink<'_>) -> out::Footprint {
+/// The footprint-level margins every pad without its own one inherits.
+#[derive(Clone, Copy)]
+struct Margins {
+    mask: Option<f64>,
+    paste: Option<f64>,
+}
+
+fn adapt(b: &BoardFootprint, margins: Margins, sink: &mut Sink<'_>) -> out::Footprint {
     let mut f = out::Footprint {
         uuid: String::new(),
         name: String::new(),
-        pads: b.pads.iter().filter_map(|p| pad(p, sink)).collect(),
+        pads: b
+            .pads
+            .iter()
+            .filter_map(|p| pad(p, margins, sink))
+            .collect(),
         silk_f: vec![],
         silk_b: vec![],
         fab_f: vec![],
@@ -358,8 +402,13 @@ fn adapt(b: &BoardFootprint, sink: &mut Sink<'_>) -> out::Footprint {
                 continue;
             }
         };
-        if let Some(g) = graphic(g, sink) {
-            list.push(g);
+        match graphic(g, sink) {
+            Some(g) => list.push(g),
+            None => sink.note(
+                "footprint.graphic_unreadable",
+                Severity::Dropped,
+                "drawing without its geometry dropped",
+            ),
         }
     }
     if !courtyard.is_empty() {
@@ -455,7 +504,7 @@ fn pad_layers(p: &BoardPad, sink: &mut Sink<'_>) -> Vec<String> {
     out
 }
 
-fn pad(p: &BoardPad, sink: &mut Sink<'_>) -> Option<out::Pad> {
+fn pad(p: &BoardPad, margins: Margins, sink: &mut Sink<'_>) -> Option<out::Pad> {
     let (text, changed) = snx_writer::canon::clean_cell(&p.number);
     if changed {
         sink.note(
@@ -464,11 +513,63 @@ fn pad(p: &BoardPad, sink: &mut Sink<'_>) -> Option<out::Pad> {
             "control characters in a pad number replaced by spaces",
         );
     }
-    let kind = match p.pad_type {
-        PadType::Smd => "Smd",
-        PadType::Thru => "Tht",
-        PadType::NpThru => "NptHole",
-        PadType::Connect => "ConnectorPad",
+    let property = p.property.as_str();
+    let fiducial = property.starts_with("pad_prop_fiducial");
+    let castellated = property == "pad_prop_castellated";
+    if matches!(
+        property,
+        "pad_prop_bga" | "pad_prop_testpoint" | "pad_prop_heatsink"
+    ) {
+        sink.note(
+            "pad.property_not_carried",
+            Severity::Approximated,
+            "pad property has no Signex field",
+        );
+    }
+    let kind = if fiducial {
+        "Fiducial"
+    } else if castellated {
+        "Castellated"
+    } else {
+        match p.pad_type {
+            PadType::Smd => "Smd",
+            PadType::Thru => "Tht",
+            PadType::NpThru => "NptHole",
+            PadType::Connect => "ConnectorPad",
+        }
+    };
+    // The format's table fixes the layer set of a fiducial and a castellated pad.
+    let layers = if fiducial {
+        let bottom = p.layers.iter().any(|l| l == "BottomCopper")
+            && !p.layers.iter().any(|l| l == "TopCopper");
+        if bottom {
+            vec!["Bottom Layer".to_string(), "Bottom Solder".to_string()]
+        } else {
+            vec!["Top Layer".to_string(), "Top Solder".to_string()]
+        }
+    } else if castellated {
+        ["Top Layer", "Bottom Layer", "Top Solder", "Bottom Solder"]
+            .map(str::to_string)
+            .to_vec()
+    } else {
+        pad_layers(p, sink)
+    };
+    // `(drill oval DIAMETER WIDTH)`: the smaller size is the hole's diameter,
+    // the larger the slot length. The format does not say which way a slot
+    // lies; it is taken along the pad's x axis, so a slot longer in y is
+    // reported.
+    let (drill, slot_length) = match (p.drill_slot, p.drill) {
+        (Some(s), Some(_)) => {
+            if s.y > s.x {
+                sink.note(
+                    "pad.slot_orientation_approximated",
+                    Severity::Approximated,
+                    "slot drill longer in y written with its length along the pad's x axis",
+                );
+            }
+            (Some(s.x.min(s.y)), Some(s.x.max(s.y)))
+        }
+        (_, d) => (d, None),
     };
     Some(out::Pad {
         number: text,
@@ -477,11 +578,11 @@ fn pad(p: &BoardPad, sink: &mut Sink<'_>) -> Option<out::Pad> {
         size: p2(p.size),
         pos: p2(p.position),
         rotation: p.rotation,
-        layers: pad_layers(p, sink),
-        drill: p.drill,
-        slot_length: None,
-        mask_margin: p.solder_mask_margin,
-        paste_margin: p.paste_margin,
+        layers,
+        drill,
+        slot_length,
+        mask_margin: p.solder_mask_margin.or(margins.mask),
+        paste_margin: p.paste_margin.or(margins.paste),
     })
 }
 
@@ -531,11 +632,6 @@ fn graphic(g: &FootprintGraphic, sink: &mut Sink<'_>) -> Option<out::Graphic> {
                 v.pop();
             }
             if v.len() < 3 {
-                sink.note(
-                    "footprint.polygon_dropped",
-                    Severity::Dropped,
-                    "polygon with fewer than three corners dropped",
-                );
                 return None;
             }
             out::GraphicKind::Polygon { vertices: v }

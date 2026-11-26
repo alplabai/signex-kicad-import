@@ -357,5 +357,5 @@ fn bytes_that_are_not_utf8_are_replaced_and_reported() {
         .iter()
         .find(|i| i.code == "symlib.invalid_utf8")
         .expect("item");
-    assert_eq!(item.severity, Severity::Info);
+    assert_eq!(item.severity, Severity::Approximated);
 }

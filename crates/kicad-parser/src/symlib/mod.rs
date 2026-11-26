@@ -72,7 +72,7 @@ fn read_file_into(path: &Path, library: &str, read: &mut SymbolLibRead) -> Resul
         sink.add(
             "",
             "symlib.invalid_utf8",
-            Severity::Info,
+            Severity::Approximated,
             format!("{name} is not valid UTF-8; unreadable bytes replaced"),
             json!({ "file": name }),
         );

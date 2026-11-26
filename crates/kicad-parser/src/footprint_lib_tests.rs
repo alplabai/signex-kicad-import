@@ -251,3 +251,93 @@ fn damaged_input_is_an_item_and_never_a_panic() {
         let _ = convert_footprint(garbage, "Test", &ids, &mut items);
     }
 }
+
+fn special(name: &str) -> (Result<FootprintFile, ParseError>, Vec<Item>) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/footprints/Special.pretty")
+        .join(name);
+    let text = std::fs::read_to_string(path).expect("fixture");
+    let mut items = Vec::new();
+    let result = convert_footprint(&text, "Special", &ids, &mut items);
+    (result, items)
+}
+
+fn item_codes(items: &[Item]) -> Vec<&str> {
+    items.iter().map(|i| i.code.as_str()).collect()
+}
+
+#[test]
+fn fiducial_castellated_and_layer_sets_follow_the_spec_table() {
+    let (file, items) = special("Layers_Test.kicad_mod");
+    let pads = file.expect("converts").footprint.pads;
+    let row = |i: usize| {
+        format!(
+            "{}|{}|{}",
+            pads[i].number,
+            pads[i].kind,
+            pads[i].layers.join("|")
+        )
+    };
+    assert_eq!(
+        row(0),
+        "1|Tht|Top Layer|Bottom Layer|Top Solder|Bottom Solder"
+    );
+    assert_eq!(row(1), "2|Smd|Bottom Layer|Bottom Solder|Bottom Paste");
+    assert_eq!(row(2), "FID1|Fiducial|Top Layer|Top Solder");
+    assert_eq!(row(3), "FID2|Fiducial|Bottom Layer|Bottom Solder");
+    assert_eq!(
+        row(4),
+        "C1|Castellated|Top Layer|Bottom Layer|Top Solder|Bottom Solder"
+    );
+    assert_eq!(pads[5].kind, "Smd");
+    assert!(item_codes(&items).contains(&"pad.property_not_carried"));
+}
+
+#[test]
+fn an_oval_drill_is_a_slot_of_the_larger_size() {
+    let (file, items) = special("Slot_Test.kicad_mod");
+    let pads = file.expect("converts").footprint.pads;
+    assert_eq!((pads[0].drill, pads[0].slot_length), (Some(0.8), Some(1.6)));
+    assert_eq!((pads[1].drill, pads[1].slot_length), (Some(0.8), Some(1.6)));
+    // Equal sizes are a round hole.
+    assert_eq!((pads[2].drill, pads[2].slot_length), (Some(0.8), None));
+    // Only the slot lying along y is reported, once.
+    assert_eq!(
+        item_codes(&items)
+            .iter()
+            .filter(|c| **c == "pad.slot_orientation_approximated")
+            .count(),
+        1
+    );
+    assert!(!item_codes(&items).contains(&"pad.slot_approximated"));
+}
+
+#[test]
+fn footprint_level_margins_are_inherited_and_ratios_reported() {
+    let (file, items) = special("Margins_Test.kicad_mod");
+    let pads = file.expect("converts").footprint.pads;
+    assert_eq!(
+        (pads[0].mask_margin, pads[0].paste_margin),
+        (Some(0.02), Some(-0.03))
+    );
+    assert_eq!(
+        (pads[1].mask_margin, pads[1].paste_margin),
+        (Some(0.07), Some(-0.03))
+    );
+    let ratio = items
+        .iter()
+        .find(|i| i.code == "pad.paste_ratio_not_carried")
+        .expect("item");
+    assert_eq!(ratio.detail["count"], 2);
+    let lost = items
+        .iter()
+        .find(|i| i.code == "footprint.graphic_unreadable")
+        .expect("item");
+    assert_eq!(lost.severity, Severity::Dropped);
+}
+
+#[test]
+fn a_bottom_side_footprint_is_refused() {
+    let (file, _) = special("Bottom_Test.kicad_mod");
+    assert!(file.is_err_and(|e| e.to_string().contains("bottom side")));
+}

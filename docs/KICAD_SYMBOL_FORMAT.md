@@ -53,7 +53,7 @@ not write) are kept as unit 0, style 0.
 | `symlib.unreadable` | error | an input file does not parse (CLI; library item) |
 | `symlib.file_unreadable` | error | a file of a `.kicad_symdir` does not parse |
 | `symlib.file_ignored` | info | a file of a `.kicad_symdir` that is not `*.kicad_sym` |
-| `symlib.invalid_utf8` | info | the file is not valid UTF-8; bytes replaced by U+FFFD |
+| `symlib.invalid_utf8` | approximated | the file is not valid UTF-8; bytes replaced by U+FFFD |
 | `symlib.token_unknown` | info | an unknown token directly in the library |
 | `symbol.token_unknown` | info | an unknown token directly in a symbol |
 | `symbol.unit_token_unknown` | info | an unknown token (for example `text_box`) in a unit |

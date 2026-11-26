@@ -607,3 +607,105 @@ fn a_panic_during_an_update_leaves_the_existing_library_untouched() {
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[test]
+fn repeated_library_names_and_footprints_are_errors_before_anything_is_written() {
+    let dir = scratch("lib-dups");
+    // Two symbol libraries named alike, in different folders.
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&a).expect("d");
+    std::fs::create_dir_all(&b).expect("d");
+    std::fs::write(a.join("Parts.kicad_sym"), TINY).expect("sym");
+    std::fs::write(b.join("Parts.kicad_sym"), TINY).expect("sym");
+    let out_dir = dir.join("out");
+    let out = run(&[
+        "library",
+        a.join("Parts.kicad_sym").to_str().expect("utf8"),
+        b.join("Parts.kicad_sym").to_str().expect("utf8"),
+        // The same footprint twice: the folder and a file inside it.
+        &footprint_fixture("Test.pretty"),
+        &footprint_fixture("Test.pretty/R_Test_0603.kicad_mod"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    let report = report_of(&out_dir);
+    let codes: Vec<&str> = report["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str())
+        .collect();
+    assert!(
+        codes.contains(&"symlib.duplicate_name") && codes.contains(&"footprint.duplicate_name"),
+        "{codes:?}"
+    );
+    assert_eq!(report["counts"]["written"]["symbols"], 1);
+    assert_eq!(
+        std::fs::read_dir(out_dir.join("footprints"))
+            .expect("dir")
+            .count(),
+        2
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn an_update_deletes_items_that_left_the_source() {
+    let dir = scratch("lib-update-delete");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let (fp, one) = (
+        footprint_fixture("Test.pretty"),
+        footprint_fixture("Test.pretty/R_Test_0603.kicad_mod"),
+    );
+    // The id derives from the library name; --library-id and --name pin it across both runs.
+    let id = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    assert_eq!(
+        run(&[
+            "library",
+            &fp,
+            "--output",
+            out,
+            "--library-id",
+            id,
+            "--name",
+            "T",
+            "--json"
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+    assert_eq!(
+        std::fs::read_dir(out_dir.join("footprints"))
+            .expect("dir")
+            .count(),
+        2
+    );
+    assert_eq!(
+        run(&[
+            "library",
+            &one,
+            "--output",
+            out,
+            "--update",
+            "--library-id",
+            id,
+            "--name",
+            "T",
+            "--json"
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+    assert_eq!(
+        std::fs::read_dir(out_dir.join("footprints"))
+            .expect("dir")
+            .count(),
+        1
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

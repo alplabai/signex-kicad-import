@@ -42,7 +42,8 @@ pub struct Symbol {
     pub local_pin_color: Option<[u8; 4]>,
     pub version: String,
     pub released: bool,
-    pub part_count: u32,
+    /// The number of units; Signex stores it as one byte.
+    pub part_count: u8,
     pub created: String,
     pub updated: String,
     pub graphics: Vec<Graphic>,

@@ -7,6 +7,7 @@
 //! footprints are converted (their envelopes are built here, since a
 //! footprint converts on its own).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -45,6 +46,8 @@ pub fn read_inputs(
         symbols: Vec::new(),
         footprints: Vec::new(),
     };
+    let mut seen_libraries: HashSet<String> = HashSet::new();
+    let mut seen_footprints: HashSet<String> = HashSet::new();
     for (done, (path, kind)) in inputs.iter().enumerate() {
         let name = path
             .file_name()
@@ -78,6 +81,18 @@ pub fn read_inputs(
             }
         };
         match kind {
+            InputKind::SymbolFile | InputKind::SymbolDir if !seen_libraries.insert(lib_name.clone()) => {
+                read.items.push(
+                    Item::new(
+                        ItemKind::Library,
+                        &lib_name,
+                        "symlib.duplicate_name",
+                        Severity::Error,
+                        format!("{name}: a symbol library named {lib_name} was already read; this one is not read"),
+                    )
+                    .with_detail(json!({ "file": name })),
+                );
+            }
             InputKind::SymbolFile | InputKind::SymbolDir => {
                 let result = if *kind == InputKind::SymbolFile {
                     read_symbol_file(path)
@@ -107,8 +122,21 @@ pub fn read_inputs(
                     Ok(fps) => {
                         read.counts.footprints += fps.found;
                         read.items.extend(fps.items);
-                        read.footprints.extend(fps.files);
-                        let _ = library;
+                        for file in fps.files {
+                            // The same footprint can arrive twice (a .pretty and a
+                            // .kicad_mod inside it): one id, one file.
+                            if seen_footprints.insert(file.footprint.uuid.clone()) {
+                                read.footprints.push(file);
+                            } else {
+                                read.items.push(Item::new(
+                                    ItemKind::Footprint,
+                                    format!("{library}:{}", file.footprint.name),
+                                    "footprint.duplicate_name",
+                                    Severity::Error,
+                                    format!("footprint {} was already read; the repeat from {name} is not read", file.footprint.name),
+                                ));
+                            }
+                        }
                     }
                     Err(e) => read.items.push(unreadable(e)),
                 }

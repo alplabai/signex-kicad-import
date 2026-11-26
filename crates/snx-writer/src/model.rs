@@ -153,6 +153,12 @@ pub struct Pad {
     /// place for them, the library footprint does.
     pub solder_mask_margin: Option<f64>,
     pub paste_margin: Option<f64>,
+    /// An oval drill's two sizes (the source's diameter and width), when
+    /// they differ: a slot. `drill` keeps the first.
+    pub drill_slot: Option<Point>,
+    /// The pad's special property word (`pad_prop_castellated`, ...); empty
+    /// for none.
+    pub property: String,
 }
 
 /// A drawing inside a footprint, footprint-local.

@@ -117,7 +117,7 @@ fn units_styles_and_the_lowest_token_carry_over() {
         .collect();
     assert_eq!(units, [(1, 1), (1, 1), (1, 2), (2, 1), (3, 1), (3, 1)]);
     assert!(s.pins[1].decorations[2] == "Dot", "inverted output");
-    assert_eq!(s.pins[3].decorations[1], "ClockEdge");
+    assert_eq!(s.pins[3].decorations[2], "ClockEdge");
     assert!(!s.pins[5].hidden && !s.pins[5].name_visible);
     // Unit 0 holds the common drawing: text, circle, arc, bezier.
     let common: Vec<&GraphicKind> = s
@@ -138,6 +138,8 @@ fn units_styles_and_the_lowest_token_carry_over() {
     );
     let sources = codes(&items, "multiunit:Dual_Gate");
     assert!(sources.contains(&"symbol.fill_approximated"), "{sources:?}");
+    // The arc and the bezier carry fills Signex cannot hold.
+    assert!(sources.contains(&"symbol.fill_dropped"), "{sources:?}");
 }
 
 #[test]

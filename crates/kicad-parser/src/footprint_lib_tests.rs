@@ -298,17 +298,23 @@ fn an_oval_drill_is_a_slot_of_the_larger_size() {
     let (file, items) = special("Slot_Test.kicad_mod");
     let pads = file.expect("converts").footprint.pads;
     assert_eq!((pads[0].drill, pads[0].slot_length), (Some(0.8), Some(1.6)));
-    assert_eq!((pads[0].size, pads[0].rotation), ([2.5, 1.5], 0.0));
     // A slot longer in y: the pad is swapped and turned a quarter, exactly.
+    assert_eq!((pads[0].size, pads[0].rotation), ([1.5, 2.5], 90.0));
     assert_eq!((pads[1].drill, pads[1].slot_length), (Some(0.8), Some(1.6)));
-    assert_eq!((pads[1].size, pads[1].rotation), ([1.5, 2.5], 90.0));
+    assert_eq!((pads[1].size, pads[1].rotation), ([2.5, 1.5], 0.0));
     // Equal sizes are a round hole.
     assert_eq!((pads[2].drill, pads[2].slot_length), (Some(0.8), None));
-    // Only the slot lying along y is reported, once.
+    // Exact for these shapes: no orientation item; one not-placeable item per footprint.
+    assert!(!item_codes(&items).contains(&"pad.slot_orientation_approximated"));
+    let item = items
+        .iter()
+        .find(|i| i.code == "pad.slot_not_placeable")
+        .expect("item");
+    assert_eq!(item.severity, Severity::Approximated);
     assert_eq!(
         item_codes(&items)
             .iter()
-            .filter(|c| **c == "pad.slot_orientation_approximated")
+            .filter(|c| **c == "pad.slot_not_placeable")
             .count(),
         1
     );
@@ -341,6 +347,4 @@ fn footprint_level_margins_are_inherited_and_ratios_reported() {
 
 #[test]
 fn a_bottom_side_footprint_is_refused() {
-    let (file, _) = special("Bottom_Test.kicad_mod");
-    assert!(file.is_err_and(|e| e.to_string().contains("bottom side")));
-}
+    let (file, _) = special("Bottom_Test.

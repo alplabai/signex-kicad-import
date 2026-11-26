@@ -47,7 +47,7 @@ footprint frame differs, below.)
 | polyline | closed (first = last) -> `polygon`; open -> `line` segments (a fill on an open one is dropped) |
 | bezier | `bezier` (token `snxsym/v4`); Signex never fills one, so a fill is dropped (`symbol.fill_dropped`) |
 | fill `background` / `outline` | Signex fill colour (255,255,194,255) / black (approximated); `(fill (type color))` exact |
-| Reference, Value positions | `designator_pos`, `comment_pos`; designator = Reference + `?` |
+| Reference, Value positions and text | `designator_pos`, `comment_pos`; designator = Reference + `?`; the comment is the source Value text (placement shows it when a part has no MPN), `*` when there is none. A derived row shares its parent's symbol, so shows the parent's Value: `part.value_from_parent` (approximated) when the values differ |
 | `in_bom no` | `component_type` `StandardNoBom` |
 | `power`, `on_board no`, `exclude_from_sim yes` | no field: approximated items |
 | `extends` (a derived symbol) | no symbol of its own: a part row on the parent's symbol (below) |
@@ -159,11 +159,15 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 | `part.table_name_changed`, `part.text_sanitized` | approximated | |
 | `library.table_entry_unresolved`, `library.table_type_unsupported`, `library.table_unreadable` | error | see Library tables |
 | `library.table_entry_disabled` | info | |
+| `library.table_entry_substituted` | info | a variable was unset and the file was found below a `--search-path` folder; names the uri and the file read |
+| `library.table_entry_unreadable` | error | the resolved library could not be read (I/O); other entries go on |
+| `part.value_from_parent` | approximated | see Symbols |
+| `update.library_kept` | info | see open point 2 |
 
 ## Open points
 
 1. Which way a slot drill lies in a Signex pad is not in the format.
-2. `--update` replaces changed files and deletes the symbol and footprint files (and an old manifest) of items that left the source, restoring everything if a step fails. It does not yet bump part versions or keep part `created` times (part rows are regenerated from the source).
+2. `--update` follows contract section 5. It reads what the earlier run wrote (its report's `files` and `file_libraries`, the old `.snxlib` rows by `row_id`, the old envelopes). It deletes only files the earlier run wrote, and only from libraries read without an error this run; user files and everything of a library that failed to read (or is no longer an input) stay, and that library's part rows are carried over (`update.library_kept`, info). A symbol or footprint whose content changed gets a patch version bump and the run's time as `updated`, `created` kept; unchanged ones keep their bytes. A part row with an unchanged `content_hash` (and unchanged symbol and footprint versions) keeps its bytes; a changed one gets a patch bump and `updated` = the run's time, and keeps `created`, state and `released`; the rows' `symbol_version` / `footprint_version` follow the primitives. Everything is moved aside first and put back if a step fails; a backup left by a crashed run is restored before the next one starts. An update is a snapshot: the app guards uncommitted work.
 3. Whether a library with no part tables loads in Signex is not stated.
 4. Envelope times are the epoch (see above); `updated` is not set on `--update`.
 5. `--models` / `--models-dir` are accepted and have no effect until models are converted.

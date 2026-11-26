@@ -870,3 +870,87 @@ fn a_part_whose_footprint_was_not_converted_is_skipped_and_reported() {
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[test]
+fn an_update_leaves_user_files_and_unreadable_libraries_alone_and_bumps_what_changed() {
+    let dir = scratch("lib-update-rules");
+    let (a, b) = (dir.join("A.kicad_sym"), dir.join("B.kicad_sym"));
+    std::fs::write(&a, TINY).expect("a");
+    std::fs::write(&b, TINY).expect("b");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let id = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    let args = |extra: &[&str]| {
+        let mut v = vec![
+            "library",
+            a.to_str().expect("utf8"),
+            b.to_str().expect("utf8"),
+            "--output",
+            out,
+            "--library-id",
+            id,
+            "--name",
+            "L",
+            "--json",
+        ];
+        v.extend(extra);
+        run(&v)
+    };
+    assert_eq!(args(&[]).status.code(), Some(0));
+    let manifest = std::fs::read_to_string(out_dir.join("L.snxlib")).expect("manifest");
+    let a_sym = std::fs::read(out_dir.join("symbols/a.snxsym")).expect("a");
+    // A user's own file in the folder.
+    std::fs::write(out_dir.join("symbols/mine.snxsym"), "mine").expect("user file");
+    std::fs::write(out_dir.join("notes.txt"), "notes").expect("user file");
+
+    // Unchanged source: every byte stays, user files too.
+    assert_eq!(args(&["--update"]).status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(out_dir.join("L.snxlib")).expect("m"),
+        manifest
+    );
+    assert_eq!(
+        std::fs::read(out_dir.join("symbols/a.snxsym")).expect("a"),
+        a_sym
+    );
+    assert!(out_dir.join("symbols/mine.snxsym").is_file() && out_dir.join("notes.txt").is_file());
+
+    // B breaks, A changes: A's symbol and row get a patch bump, B's files and rows stay.
+    std::fs::write(&b, "(kicad_symbol_lib (symbol \"R\"").expect("b");
+    std::fs::write(&a, TINY.replace("(length 1.27)", "(length 2.54)")).expect("a");
+    let r = args(&["--update"]);
+    assert_eq!(
+        r.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(
+        out_dir.join("symbols/b.snxsym").is_file(),
+        "an unreadable library keeps its file"
+    );
+    let a_new = std::fs::read_to_string(out_dir.join("symbols/a.snxsym")).expect("a");
+    assert!(a_new.contains("version = \"1.0.1\""), "{a_new}");
+    let value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(out_dir.join("L.snxlib")).expect("m"))
+            .expect("toml");
+    let tables = value["tables"].as_table().expect("tables");
+    assert_eq!(tables.len(), 2, "B's table is carried over: {tables:?}");
+    let row = |t: &str| {
+        value["tables"][t]["tsv"]
+            .as_str()
+            .expect("tsv")
+            .lines()
+            .nth(1)
+            .expect("row")
+            .to_string()
+    };
+    assert_eq!(row("A").split('\t').nth(16), Some("1.0.1"));
+    assert_eq!(
+        row("A").split('\t').nth(18),
+        Some("1.0.1"),
+        "the row follows its symbol's version"
+    );
+    assert_eq!(row("B").split('\t').nth(16), Some("1.0.0"));
+
+    // 

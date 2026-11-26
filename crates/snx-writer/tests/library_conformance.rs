@@ -511,11 +511,13 @@ mod parts {
             write_classes(&classes),
             write_table(&Table {
                 name: "logic".into(),
-                rows: vec![c]
+                rows: vec![c],
+                kept: vec![]
             }),
             write_table(&Table {
                 name: "resistors".into(),
-                rows: vec![b, a]
+                rows: vec![b, a],
+                kept: vec![]
             })
         );
         let from = want.find("\n[[classes]]").expect("classes");

@@ -26,6 +26,10 @@ pub struct LibraryReport {
     pub source_counts: Counts,
     pub written_counts: Counts,
     pub items: Vec<Item>,
+    /// The library files this report's library holds, and the source library
+    /// each came from (an update deletes only files it finds listed here).
+    pub files: Vec<String>,
+    pub file_libraries: Vec<(String, String)>,
 }
 
 impl LibraryReport {
@@ -45,6 +49,8 @@ impl LibraryReport {
                 "written": self.written_counts.to_json(),
             },
             "items": self.items.iter().map(Item::to_json).collect::<Vec<_>>(),
+            "files": self.files,
+            "file_libraries": self.file_libraries.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
         })
     }
 

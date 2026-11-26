@@ -163,7 +163,14 @@ fn symbol(s: &Symbol, units: &[Unit], uuid: String, n: &mut Notes<'_>) -> SSym {
         anchor: [0.0, 0.0],
         pins,
         designator,
-        comment: "*".to_string(),
+        // Placement shows the part value from the symbol's comment when the
+        // part has no MPN; the source Value is the closest text.
+        comment: s
+            .property("Value")
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("*")
+            .to_string(),
         designator_pos: at("Reference"),
         comment_pos: at("Value"),
         description: s.description().unwrap_or("").to_string(),

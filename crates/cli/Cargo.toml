@@ -12,6 +12,7 @@ name = "signex-kicad-import"
 path = "src/main.rs"
 
 [dependencies]
+toml = { workspace = true }
 kicad-parser = { workspace = true }
 snx-writer = { workspace = true }
 clap = { workspace = true }
@@ -21,5 +22,4 @@ sha2 = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-toml = { workspace = true }
 regex = { workspace = true }

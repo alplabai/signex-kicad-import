@@ -70,6 +70,46 @@ pub struct Parts {
     pub rows: usize,
 }
 
+/// A row of the library an earlier run wrote, as an update needs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OldRow {
+    /// The line of cells, as written.
+    pub line: String,
+    pub created: String,
+    pub state: String,
+    pub released: bool,
+    pub version: String,
+    pub content_hash: String,
+    pub symbol_version: String,
+    pub footprint_version: String,
+}
+
+/// What an update brings to the rows: the versions of the primitives as of
+/// this run, the rows of the last run and the run's time.
+#[derive(Debug, Clone, Default)]
+pub struct Update {
+    /// Symbol uuid to its version; absent means `1.0.0`.
+    pub symbol_versions: std::collections::HashMap<String, String>,
+    pub footprint_versions: std::collections::HashMap<String, String>,
+    pub old_rows: std::collections::HashMap<String, OldRow>,
+    /// The run's time as a row cell (`...+00:00`); empty outside an update.
+    pub now: String,
+}
+
+/// The next patch version: `1.0.0` to `1.0.1`; text that is not `X.Y.Z` gets `.1` appended.
+pub fn bump_patch(version: &str) -> String {
+    let mut parts: Vec<&str> = version.split('.').collect();
+    if let Some(n) = parts.last().and_then(|p| p.parse::<u64>().ok())
+        && parts.len() == 3
+    {
+        let last = (n + 1).to_string();
+        let len = parts.len();
+        parts[len - 1] = &last;
+        return parts.join(".");
+    }
+    format!("{version}.1")
+}
+
 /// `key` of `s`, or of the nearest ancestor along `extends` that has it.
 fn lookup<'a>(lib: &'a SymbolLib, s: &'a Symbol, key: &str) -> Option<&'a str> {
     let mut cur = s;
@@ -153,6 +193,7 @@ pub fn build_parts(
     libs: &[(String, SymbolLibRead)],
     library_id: Uuid,
     footprints: &HashSet<String>,
+    update: &Update,
 ) -> Parts {
     let mut out = Parts::default();
     let mut used_classes: HashSet<&'static str> = HashSet::new();
@@ -160,6 +201,7 @@ pub fn build_parts(
     for (library, read) in libs {
         let lib = &read.lib;
         let mut rows: Vec<PartRow> = Vec::new();
+        let mut kept: Vec<(String, String)> = Vec::new();
         for s in &lib.symbols {
             if is_power(lib, s) {
                 continue;
@@ -215,12 +257,57 @@ pub fn build_parts(
                 &mut used_classes,
                 &mut out.items,
             );
+            let mut row = row;
+            if row.symbol.uuid != s_uuid(library_id, library, &s.name) {
+                // A derived symbol shares its parent's drawing, and with it the
+                // value placement reads from the symbol.
+                if lookup(lib, s, "Value") != lookup(lib, root, "Value") {
+                    out.items.push(Item::new(
+                        ItemKind::Part,
+                        &source,
+                        "part.value_from_parent",
+                        Severity::Approximated,
+                        "the part shares its parent's symbol, whose value text it shows instead of its own",
+                    ));
+                }
+            }
+            if let Some(v) = update.symbol_versions.get(&row.symbol.uuid) {
+                row.symbol_version.clone_from(v);
+            }
+            if let Some(f) = row
+                .footprint
+                .as_ref()
+                .and_then(|f| update.footprint_versions.get(&f.uuid))
+            {
+                row.footprint_version.clone_from(f);
+            }
+            match update.old_rows.get(&row.row_id) {
+                Some(old) => {
+                    row.state.clone_from(&old.state);
+                    row.released = old.released;
+                    let same = snx_writer::part_table::content_hash(&row) == old.content_hash
+                        && row.symbol_version == old.symbol_version
+                        && row.footprint_version == old.footprint_version;
+                    if same {
+                        kept.push((row.row_id.clone(), old.line.clone()));
+                        continue;
+                    }
+                    row.version = bump_patch(&old.version);
+                    row.created.clone_from(&old.created);
+                    row.updated.clone_from(&update.now);
+                }
+                None if !update.now.is_empty() => {
+                    row.created.clone_from(&update.now);
+                    row.updated.clone_from(&update.now);
+                }
+                None => {}
+            }
             rows.push(row);
         }
-        if !rows.is_empty() {
-            out.rows += rows.len();
+        if !rows.is_empty() || !kept.is_empty() {
+            out.rows += rows.len() + kept.len();
             let name = table_name(library, &mut used_tables, &mut out.items);
-            out.tables.push(Table { name, rows });
+            out.tables.push(Table { name, rows, kept });
         }
     }
     out.classes = CLASSES
@@ -232,6 +319,10 @@ pub fn build_parts(
         })
         .collect();
     out
+}
+
+fn s_uuid(library_id: Uuid, library: &str, symbol: &str) -> String {
+    item_id(library_id, "symbol", library, symbol).to_string()
 }
 
 fn push_param(parameters: &mut Vec<(String, Param)>, key: &str, value: &str) {
@@ -405,10 +496,4 @@ fn row(
             Severity::Info,
             "part row written",
         )
-        .with_id(&row_id),
-    );
-    row
-}
-
-#[cfg(test)]
-mod tests;
+      

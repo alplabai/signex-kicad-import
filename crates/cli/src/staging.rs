@@ -27,6 +27,9 @@ impl Staging {
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let dir = out.with_file_name(format!(".{name}.tmp-import"));
         if dir.exists() {
+            // A run that died while committing left what it had moved aside
+            // in `.backup`: put it back before clearing the folder.
+            restore_backup(&dir.join(".backup"), out)?;
             std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
         }
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -113,40 +116,35 @@ impl Staging {
     }
 }
 
+/// Move every file under `backup` back to the same relative path in `out`.
+fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
+    fn walk(dir: &Path, base: &Path, out: &Path) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, base, out)?;
+            } else if let Ok(rel) = path.strip_prefix(base) {
+                let target = out.join(rel);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::rename(&path, &target)
+                    .with_context(|| format!("restoring {}", target.display()))?;
+            }
+        }
+        Ok(())
+    }
+    if backup.is_dir() {
+        walk(backup, backup, out)?;
+    }
+    Ok(())
+}
+
 impl Drop for Staging {
     fn drop(&mut self) {
         // Best effort: the folder may already be gone.
         let _ = std::fs::remove_dir_all(&self.dir);
     }
-}
-
-/// The library files of an earlier run that the new run no longer writes:
-/// converter-owned files (`symbols/*.snxsym`, `footprints/*.snxfpt`, a
-/// `.snxlib` in the root) not among `keep` (relative paths).
-pub fn stale_files(out: &Path, keep: &[String]) -> Vec<PathBuf> {
-    let mut stale = Vec::new();
-    let mut scan = |dir: &Path, ext: &str, prefix: &str| {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let rel = if prefix.is_empty() {
-                name.clone()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            if path.is_file() && name.ends_with(ext) && !keep.contains(&rel) {
-                stale.push(PathBuf::from(rel));
-            }
-        }
-    };
-    scan(&out.join("symbols"), ".snxsym", "symbols");
-    scan(&out.join("footprints"), ".snxfpt", "footprints");
-    scan(out, ".snxlib", "");
-    stale.sort();
-    stale
 }
 
 #[cfg(test)]
@@ -196,12 +194,7 @@ mod tests {
         let mut stage = Staging::new(&out).expect("stage");
         stage.write("symbols/keep.snxsym", b"v2").expect("write");
         stage.write("symbols/new.snxsym", b"new").expect("write");
-        let keep = [
-            "symbols/keep.snxsym".to_string(),
-            "symbols/new.snxsym".to_string(),
-        ];
-        let stale = stale_files(&out, &keep);
-        assert_eq!(stale, [PathBuf::from("symbols/old.snxsym")]);
+        let stale = [PathBuf::from("symbols/old.snxsym")];
         stage.commit(&stale).expect("commit");
         assert_eq!(
             std::fs::read(out.join("symbols/keep.snxsym")).expect("f"),
@@ -229,4 +222,20 @@ mod tests {
         assert!(!out.join("symbols/zzz.snxsym").exists());
         std::fs::remove_dir_all(&base).expect("cleanup");
     }
-}
+
+    #[test]
+    fn a_backup_left_by_a_crashed_run_is_put_back_first() {
+        let base = tmp("crash");
+        let out = base.join("lib");
+        std::fs::create_dir_all(out.join("symbols")).expect("out");
+        // The crashed run moved a.snxsym aside and died before placing its new one.
+        let leftover = base.join(".lib.tmp-import/.backup/symbols");
+        std::fs::create_dir_all(&leftover).expect("backup");
+        std::fs::write(leftover.join("a.snxsym"), "precious").expect("f");
+        let _stage = Staging::new(&out).expect("stage");
+        assert_eq!(
+            std::fs::read(out.join("symbols/a.snxsym")).expect("restored"),
+            b"precious"
+        );
+        assert!(!base.join(".lib.tmp-import/.backup").exists());
+        std::fs::remove_dir_all(

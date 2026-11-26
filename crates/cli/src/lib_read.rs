@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use kicad_parser::footprint_lib::{read_footprint_file, read_pretty_dir};
-use kicad_parser::lib_table::{TableKind, parse_lib_table, resolve_entry};
+use kicad_parser::lib_table::{TableKind, parse_lib_table, resolve_entry_noted};
 use kicad_parser::libids::item_id;
 use kicad_parser::symlib::{SymbolLibRead, read_symbol_dir, read_symbol_file};
 use kicad_parser::{Item, ItemKind, Severity};
@@ -34,6 +34,11 @@ pub struct Read {
     /// The symbol libraries read, as (library name, library), in input order.
     pub symbols: Vec<(String, SymbolLibRead)>,
     pub footprints: Vec<FootprintFile>,
+    /// The library each of `footprints` came from, in step with it.
+    pub footprint_libs: Vec<String>,
+    /// Libraries that were read this run without any error item: an update
+    /// may delete what the earlier run wrote from them, and only from them.
+    pub clean_libraries: HashSet<String>,
 }
 
 struct Reader {
@@ -41,6 +46,8 @@ struct Reader {
     library_id: Uuid,
     seen_libraries: HashSet<String>,
     seen_footprints: HashSet<String>,
+    /// Every library a read was attempted for.
+    libraries: HashSet<String>,
 }
 
 pub fn read_inputs(
@@ -57,10 +64,13 @@ pub fn read_inputs(
             items: Vec::new(),
             symbols: Vec::new(),
             footprints: Vec::new(),
+            footprint_libs: Vec::new(),
+            clean_libraries: HashSet::new(),
         },
         library_id,
         seen_libraries: HashSet::new(),
         seen_footprints: HashSet::new(),
+        libraries: HashSet::new(),
     };
     for (done, (path, kind)) in inputs.iter().enumerate() {
         let name = file_name(path);
@@ -86,6 +96,11 @@ pub fn read_inputs(
         }
         emitter.progress(done + 1, Some(inputs.len()), &name);
     }
+    r.read.clean_libraries = r
+        .libraries
+        .difference(&r.failed_libraries())
+        .cloned()
+        .collect();
     Ok(r.read)
 }
 
@@ -95,6 +110,21 @@ fn file_name(path: &Path) -> String {
 }
 
 impl Reader {
+    /// Libraries with an error item: their source is `lib` or `lib:item`.
+    fn failed_libraries(&self) -> HashSet<String> {
+        let mut failed = HashSet::new();
+        for item in self
+            .read
+            .items
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+        {
+            let lib = item.source.split(':').next().unwrap_or("");
+            failed.insert(lib.to_string());
+        }
+        failed
+    }
+
     fn error(&mut self, kind: ItemKind, source: &str, code: &str, message: String, file: &str) {
         self.read.items.push(
             Item::new(kind, source, code, Severity::Error, message)
@@ -105,6 +135,7 @@ impl Reader {
     /// Read a symbol file or folder as the library called `lib`.
     fn symbol_library(&mut self, path: &Path, lib: &str) {
         let name = file_name(path);
+        self.libraries.insert(lib.to_string());
         if !self.seen_libraries.insert(lib.to_string()) {
             let message = format!(
                 "{name}: a symbol library named {lib} was already read; this one is not read"
@@ -138,6 +169,7 @@ impl Reader {
 
     fn footprint_library(&mut self, path: &Path, lib: &str) {
         let name = file_name(path);
+        self.libraries.insert(lib.to_string());
         let library_id = self.library_id;
         let ids = move |is_file: bool, fp: &str| footprint_id(library_id, lib, is_file, fp);
         match read_pretty_dir(path, &ids) {
@@ -151,6 +183,7 @@ impl Reader {
 
     fn footprint_file(&mut self, path: &Path, lib: &str) {
         let name = file_name(path);
+        self.libraries.insert(lib.to_string());
         let library_id = self.library_id;
         let ids = move |is_file: bool, fp: &str| footprint_id(library_id, lib, is_file, fp);
         let fps = read_footprint_file(path, lib, &ids);
@@ -171,6 +204,7 @@ impl Reader {
             // The same footprint can arrive twice (a .pretty and a .kicad_mod
             // inside it): one id, one file.
             if self.seen_footprints.insert(file.footprint.uuid.clone()) {
+                self.read.footprint_libs.push(lib.to_string());
                 self.read.footprints.push(file);
             } else {
                 self.read.items.push(Item::new(
@@ -236,8 +270,23 @@ impl Reader {
                 );
                 continue;
             }
-            let resolved = match resolve_entry(entry, dir, search, &env, vars) {
-                Ok(p) => p,
+            let resolved = match resolve_entry_noted(entry, dir, search, &env, vars) {
+                Ok(r) => {
+                    if let Some(uri) = &r.substituted_for {
+                        self.read.items.push(Item::new(
+                            ItemKind::Library,
+                            &source,
+                            "library.table_entry_substituted",
+                            Severity::Info,
+                            format!(
+                                "{}: {uri} not set; read {} instead",
+                                entry.name,
+                                r.path.display()
+                            ),
+                        ));
+                    }
+                    r.path
+                }
                 Err(why) => {
                     let message = format!("{}: {why}; not converted", entry.name);
                     self.error(
@@ -250,10 +299,24 @@ impl Reader {
                     continue;
                 }
             };
-            self.read.sources.push(Source {
-                path: resolved.clone(),
-                sha256: sha256_of(&resolved)?,
-            });
+            match sha256_of(&resolved) {
+                Ok(sha256) => self.read.sources.push(Source {
+                    path: resolved.clone(),
+                    sha256,
+                }),
+                Err(e) => {
+                    // One unreadable library must not stop the others.
+                    let message = format!("{}: {e:#}; not converted", entry.name);
+                    self.error(
+                        ItemKind::Library,
+                        &source,
+                        "library.table_entry_unreadable",
+                        message,
+                        &name,
+                    );
+                    continue;
+                }
+            }
             match table.kind {
                 TableKind::Symbol => self.symbol_library(&resolved, &entry.name),
                 TableKind::Footprint => self.footprint_library(&resolved, &entry.name),
@@ -267,8 +330,3 @@ impl Reader {
 pub fn footprint_id(library_id: Uuid, lib: &str, is_file: bool, name: &str) -> String {
     let kind = if is_file {
         "footprint-file"
-    } else {
-        "footprint"
-    };
-    item_id(library_id, kind, lib, name).to_string()
-}

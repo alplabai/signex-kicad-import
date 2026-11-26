@@ -21,7 +21,12 @@ fn build() -> Parts {
     let read = read_symbol_file(&path).expect("reads");
     let fps: HashSet<String> =
         [item_id(lib_id(), "footprint", "Fps", "R_Test_0603").to_string()].into();
-    build_parts(&[("parts".to_string(), read)], lib_id(), &fps)
+    build_parts(
+        &[("parts".to_string(), read)],
+        lib_id(),
+        &fps,
+        &Update::default(),
+    )
 }
 
 fn row<'a>(p: &'a Parts, pn: &str) -> &'a PartRow {
@@ -211,7 +216,12 @@ fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
   (symbol \"S_1_1\" (pin passive line (at 0 0 0) (length 1) (name \"A\") (number \"1\"))))
   (symbol \"T'''x\\t\" (property \"Reference\" \"U\") (symbol \"T'''x\\t_1_1\" (pin passive line (at 0 0 0) (length 1) (name \"A\") (number \"1\")))))";
     let read = crate::symlib::read_symbol_lib(text, "li'''b").expect("reads");
-    let p = build_parts(&[("li'''b".to_string(), read)], lib_id(), &HashSet::new());
+    let p = build_parts(
+        &[("li'''b".to_string(), read)],
+        lib_id(),
+        &HashSet::new(),
+        &Update::default(),
+    );
     let manifest =
         snx_writer::write_manifest(&lib_id().to_string(), "n", None, &p.classes, &p.tables);
     let value: toml::Value = toml::from_str(&manifest).expect("the manifest is valid TOML");
@@ -231,4 +241,135 @@ fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
             .iter()
             .any(|i| i.code == "part.text_sanitized" && i.severity == Severity::Approximated)
     );
+}
+
+#[test]
+fn build_parts_gives_a_table_whose_rows_are_what_the_symbols_say() {
+    let p = build();
+    let manifest =
+        snx_writer::write_manifest(&lib_id().to_string(), "n", None, &p.classes, &p.tables);
+    let value: toml::Value = toml::from_str(&manifest).expect("valid TOML");
+    let tsv = value["tables"]["parts"]["tsv"].as_str().expect("tsv");
+    let lines: Vec<Vec<&str>> = tsv.lines().map(|l| l.split('\t').collect()).collect();
+    assert_eq!(lines.len(), 6, "header and five rows");
+    assert!(lines.iter().all(|l| l.len() == 22));
+    // Rows are sorted by row_id and each carries the hash of its own content.
+    let ids: Vec<&str> = lines[1..].iter().map(|l| l[0]).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted);
+    for (cells, row) in lines[1..].iter().zip(
+        p.tables[0]
+            .rows
+            .iter()
+            .map(|r| (r.row_id.as_str(), r))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .values(),
+    ) {
+        assert_eq!(cells[15], content_hash(row));
+        assert_eq!(cells[16], "1.0.0");
+        assert_eq!(cells[17], "true");
+    }
+    let resistor = lines[1..]
+        .iter()
+        .find(|l| l[1] == "parts:R_Part")
+        .expect("row");
+    assert_eq!(resistor[2], "resistor");
+    assert!(resistor[3].contains("https://example.com/r.pdf"));
+    assert!(resistor[5].contains(&item_id(lib_id(), "symbol", "parts", "R_Part").to_string()));
+    assert!(resistor[11].contains("\"Tolerance\":{\"kind\":\"Text\",\"value\":\"1%\"}"));
+}
+
+#[test]
+fn a_derived_row_with_another_value_reports_the_parents_symbol_text() {
+    let p = build();
+    let item = p
+        .items
+        .iter()
+        .find(|i| i.code == "part.value_from_parent")
+        .expect("item");
+    assert_eq!(
+        (item.source.as_str(), item.severity),
+        ("parts:R_Derived", Severity::Approximated)
+    );
+    assert_eq!(
+        p.items
+            .iter()
+            .filter(|i| i.code == "part.value_from_parent")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_update_keeps_unchanged_rows_and_bumps_changed_ones() {
+    let first = build();
+    let rows: Vec<PartRow> = first.tables[0].rows.clone();
+    let old = |r: &PartRow, hash: String| OldRow {
+        line: format!("OLD-LINE-{}", r.row_id),
+        created: "2020-01-01T00:00:00+00:00".into(),
+        state: "Draft".into(),
+        released: false,
+        version: "1.2.3".into(),
+        content_hash: hash,
+        symbol_version: r.symbol_version.clone(),
+        footprint_version: r.footprint_version.clone(),
+    };
+    let same = rows
+        .iter()
+        .find(|r| r.internal_pn == "parts:R_Part")
+        .expect("row");
+    let changed = rows
+        .iter()
+        .find(|r| r.internal_pn == "parts:C_NoFp")
+        .expect("row");
+    // The old state is Draft, so the hash an unchanged row had was taken with it.
+    let mut as_old = same.clone();
+    as_old.state = "Draft".into();
+    let mut update = Update {
+        now: "2026-11-26T10:00:00+00:00".into(),
+        ..Update::default()
+    };
+    update
+        .old_rows
+        .insert(same.row_id.clone(), old(same, content_hash(&as_old)));
+    update
+        .old_rows
+        .insert(changed.row_id.clone(), old(changed, "0".repeat(64)));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/symbols/parts.kicad_sym");
+    let read = read_symbol_file(&path).expect("reads");
+    let fps: HashSet<String> =
+        [item_id(lib_id(), "footprint", "Fps", "R_Test_0603").to_string()].into();
+    let p = build_parts(&[("parts".to_string(), read)], lib_id(), &fps, &update);
+    let t = &p.tables[0];
+    assert_eq!(
+        t.kept,
+        [(same.row_id.clone(), format!("OLD-LINE-{}", same.row_id))]
+    );
+    let c = t
+        .rows
+        .iter()
+        .find(|r| r.internal_pn == "parts:C_NoFp")
+        .expect("row");
+    assert_eq!(
+        (c.version.as_str(), c.created.as_str(), c.updated.as_str()),
+        (
+            "1.2.4",
+            "2020-01-01T00:00:00+00:00",
+            "2026-11-26T10:00:00+00:00"
+        )
+    );
+    assert_eq!((c.state.as_str(), c.released), ("Draft", false));
+    // A row that is new to the library is stamped with the run's time.
+    let l = t
+        .rows
+        .iter()
+        .find(|r| r.internal_pn == "parts:LED_Part")
+        .expect("row");
+    assert_eq!(
+        (l.created.as_str(), l.version.as_str()),
+        ("2026-11-26T10:00:00+00:00", "1.0.0")
+    );
+    assert_eq!(p.rows, 5);
+    assert_eq!(bump_patch("1.0.9"), "1.0.10");
 }

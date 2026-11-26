@@ -5,10 +5,10 @@
 //! The `library` command's convert phase: the read symbols and footprints
 //! as the files of a Signex library directory.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use kicad_parser::libids::item_id;
-use kicad_parser::parts::build_parts;
+use kicad_parser::parts::{Update, build_parts};
 use kicad_parser::symlib::to_snx::to_symbol_file;
 use kicad_parser::{Item, ItemKind, Severity};
 use snx_writer::{write_footprint_file, write_manifest, write_symbol_file};
@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::contract::Counts;
 use crate::lib_read::Read;
+use crate::lib_update::Previous;
 use crate::progress::Emitter;
 
 /// The files to write, relative to the library root, and what they hold.
@@ -25,6 +26,8 @@ pub struct Built {
     pub items: Vec<Item>,
     /// Symbols that could have a part row (not power symbols).
     pub candidates: usize,
+    /// The source library of each library file, by relative path.
+    pub file_libs: Vec<(String, String)>,
 }
 
 /// A file name for a symbol envelope: lower-case ASCII letters and digits,
@@ -64,7 +67,23 @@ pub fn manifest_name(name: &str) -> String {
     format!("{}.snxlib", if safe.is_empty() { "library" } else { &safe })
 }
 
-pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Built {
+/// The state an `--update` run builds against.
+pub struct UpdateCx<'a> {
+    pub previous: &'a Previous,
+    /// The run's time, `2026-01-02T03:04:05Z`.
+    pub now: &'a str,
+}
+
+pub fn build(
+    read: &Read,
+    library_id: Uuid,
+    name: &str,
+    emitter: &Emitter,
+    update: Option<&UpdateCx<'_>>,
+) -> Built {
+    let mut file_libs: Vec<(String, String)> = Vec::new();
+    let mut symbol_versions: HashMap<String, String> = HashMap::new();
+    let mut footprint_versions: HashMap<String, String> = HashMap::new();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut items = Vec::new();
     let mut written = Counts::default();
@@ -76,13 +95,23 @@ pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Bu
         emitter.progress(done, Some(total), library);
         let file_uuid = item_id(library_id, "symbol-file", library, library).to_string();
         let id_of = |symbol: &str| item_id(library_id, "symbol", library, symbol).to_string();
-        let file = to_symbol_file(&symbols.lib, library, file_uuid.clone(), &id_of, &mut items);
+        let mut file = to_symbol_file(&symbols.lib, library, file_uuid.clone(), &id_of, &mut items);
         written.symbols += file.symbols.len();
         let mut rel = format!("symbols/{}.snxsym", slug(library));
         if !taken.insert(rel.clone()) {
             rel = format!("symbols/{file_uuid}.snxsym");
             taken.insert(rel.clone());
         }
+        if let Some(u) = update {
+            symbol_versions.extend(u.previous.apply_symbols(&rel, &mut file, u.now));
+        } else {
+            symbol_versions.extend(
+                file.symbols
+                    .iter()
+                    .map(|s| (s.uuid.clone(), s.version.clone())),
+            );
+        }
+        file_libs.push((rel.clone(), library.clone()));
         files.push((rel, write_symbol_file(&file).into_bytes()));
         for s in &file.symbols {
             items.push(
@@ -99,23 +128,29 @@ pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Bu
         done += 1;
         emitter.progress(done, Some(total), library);
     }
-    for fp in &read.footprints {
+    for (fp, lib) in read.footprints.iter().zip(&read.footprint_libs) {
+        let mut fp = fp.clone();
         emitter.progress(done, Some(total), &fp.footprint.name);
         written.footprints += 1;
+        let rel = format!("footprints/{}.snxfpt", fp.footprint.uuid);
+        if let Some(u) = update {
+            let (uuid, version) = u.previous.apply_footprint(&rel, &mut fp, u.now);
+            footprint_versions.insert(uuid, version);
+        } else {
+            footprint_versions.insert(fp.footprint.uuid.clone(), fp.footprint.version.clone());
+        }
         items.push(
             Item::new(
                 ItemKind::Footprint,
-                fp.footprint.name.clone(),
+                format!("{lib}:{}", fp.footprint.name),
                 "footprint.written",
                 Severity::Info,
                 "footprint written",
             )
             .with_id(&fp.footprint.uuid),
         );
-        files.push((
-            format!("footprints/{}.snxfpt", fp.footprint.uuid),
-            write_footprint_file(fp).into_bytes(),
-        ));
+        file_libs.push((rel.clone(), lib.clone()));
+        files.push((rel, write_footprint_file(&fp).into_bytes()));
         done += 1;
         emitter.progress(done, Some(total), &fp.footprint.name);
     }
@@ -125,7 +160,23 @@ pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Bu
         .iter()
         .map(|f| f.footprint.uuid.clone())
         .collect();
-    let parts = build_parts(&read.symbols, library_id, &footprints);
+    let row_update = match update {
+        Some(u) => u.previous.row_update(
+            &u.now.replace('Z', "+00:00"),
+            symbol_versions,
+            footprint_versions,
+        ),
+        None => Update::default(),
+    };
+    let mut parts = build_parts(&read.symbols, library_id, &footprints, &row_update);
+    if let Some(u) = update {
+        u.previous.carry_over(
+            &read.clean_libraries,
+            &mut parts.tables,
+            &mut parts.classes,
+            &mut parts.items,
+        );
+    }
     written.parts = parts.rows;
     items.extend(parts.items);
     files.push((
@@ -144,6 +195,7 @@ pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Bu
         written,
         items,
         candidates: parts.candidates,
+        file_libs,
     }
 }
 
@@ -156,7 +208,4 @@ mod tests {
         assert_eq!(slug("Conformance Symbols"), "conformance-symbols");
         assert_eq!(slug("--A__b--"), "a-b");
         assert_eq!(slug("日本"), "untitled");
-        assert_eq!(manifest_name("A/B:C"), "A_B_C.snxlib");
-        assert_eq!(manifest_name("  "), "library.snxlib");
-    }
-}
+        assert_eq!(manifest_name("A/B:C"), "A_B_C.snxl

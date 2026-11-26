@@ -109,10 +109,13 @@ pub struct PartRow {
     pub alternate_symbols: Vec<AlternateSymbol>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Table {
     pub name: String,
     pub rows: Vec<PartRow>,
+    /// Rows kept as an earlier run wrote them: `(row_id, the line of cells)`.
+    /// An update keeps the bytes of a row whose content did not change.
+    pub kept: Vec<(String, String)>,
 }
 
 /// A JSON number as section 5.2 gives it: shortest round trip, integral
@@ -580,8 +583,14 @@ pub fn write_table(table: &Table) -> String {
         "\n[tables.{}]\ntsv = '''\n{header}\n",
         toml_key(&table.name)
     );
-    for row in rows {
-        o.push_str(&cells(row, with_alternates).join("\t"));
+    let mut lines: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| (r.row_id.clone(), cells(r, with_alternates).join("\t")))
+        .collect();
+    lines.extend(table.kept.iter().cloned());
+    lines.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    for (_, line) in lines {
+        o.push_str(&line);
         o.push('\n');
     }
     o.push_str("'''\n");
@@ -634,6 +643,7 @@ mod tests {
         let text = write_table(&Table {
             name: "t".into(),
             rows: vec![row],
+            kept: vec![],
         });
         let body = text
             .strip_prefix("\n[tables.t]\ntsv = '''\n")

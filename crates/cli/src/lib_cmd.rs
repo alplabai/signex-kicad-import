@@ -13,9 +13,11 @@ use crate::contract::{Counts, Exit, Outcome, describe};
 use crate::lib_inputs::{InputKind, LibraryArgs, validate};
 use crate::lib_read::read_inputs;
 use crate::lib_report::{LibraryReport, Source, now_utc};
+use crate::lib_update::Previous;
+use crate::lib_write::UpdateCx;
 use crate::lib_write::build;
 use crate::progress::{Emitter, HEARTBEAT};
-use crate::staging::{Staging, stale_files};
+use crate::staging::Staging;
 use kicad_parser::libids::library_id;
 
 #[derive(Parser, Debug)]
@@ -139,13 +141,15 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         return Outcome::failed(e);
     }
     let started = now_utc();
+    // What the earlier run wrote, read before this run replaces its report.
+    let previous = args.update.then(|| Previous::load(&out));
     emitter.phase("read", Some(inputs.len()));
     let read = match read_inputs(&inputs, library_id, &args.search_path, emitter) {
         Ok(r) => r,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
     let mut report = LibraryReport {
-        started,
+        started: started.clone(),
         sources: read
             .sources
             .iter()
@@ -158,6 +162,8 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         source_counts: read.counts,
         written_counts: Counts::default(),
         items: read.items.clone(),
+        files: Vec::new(),
+        file_libraries: Vec::new(),
     };
     // A run that read its sources leaves its report even when it fails.
     let report_path = match report.write(&out) {
@@ -180,11 +186,46 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             &report,
         );
     }
-    let built = build(&read, library_id, &name, emitter);
+    let update_cx = previous.as_ref().map(|p| UpdateCx {
+        previous: p,
+        now: &started,
+    });
+    let built = build(&read, library_id, &name, emitter, update_cx.as_ref());
     report.items.extend(built.items);
     report.written_counts = built.written;
     report.source_counts.parts = built.candidates;
+    let keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
+    // An update removes only what the earlier run wrote from libraries that
+    // read cleanly this run; the rest of the folder is not touched.
+    let stale = previous
+        .as_ref()
+        .map(|p| p.stale(&keep, &read.clean_libraries))
+        .unwrap_or_default();
+    report.files = match &previous {
+        Some(p) => p.files_after(&keep, &stale),
+        None => keep.clone(),
+    };
+    report.file_libraries = report
+        .files
+        .iter()
+        .filter_map(|f| {
+            built
+                .file_libs
+                .iter()
+                .find(|(rel, _)| rel == f)
+                .map(|(_, l)| (f.clone(), l.clone()))
+                .or_else(|| {
+                    previous
+                        .as_ref()
+                        .and_then(|p| p.lib_of(f))
+                        .map(|l| (f.clone(), l.clone()))
+                })
+        })
+        .collect();
     if args.dry_run {
+        // Nothing was written: a later update must not think these files exist.
+        report.files.clear();
+        report.file_libraries.clear();
         return finish(&report, &out, Vec::new(), &report_path);
     }
     emitter.phase("write", Some(built.files.len()));
@@ -195,13 +236,6 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             stage.write(rel, bytes)?;
         }
         test_panic("write");
-        // An update also removes the items of the earlier run that left the source.
-        let stale = if args.update {
-            let keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
-            stale_files(&out, &keep)
-        } else {
-            Vec::new()
-        };
         stage.commit(&stale)
     })();
     match staged {
@@ -263,9 +297,3 @@ fn check_update_target(out: &std::path::Path, library_id: uuid::Uuid) -> Result<
 #[cfg(debug_assertions)]
 pub fn test_panic(point: &str) {
     if std::env::var("SIGNEX_KICAD_IMPORT_TEST_PANIC").is_ok_and(|v| v == point) {
-        panic!("test panic at {point}");
-    }
-}
-
-#[cfg(not(debug_assertions))]
-pub fn test_panic(_point: &str) {}

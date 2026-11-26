@@ -146,18 +146,28 @@ pub fn expand_uri(
     (out, missing)
 }
 
+/// A table entry's library found on disk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resolved {
+    pub path: PathBuf,
+    /// Set when the file is not where the uri says but was found below a
+    /// `--search-path` folder: the uri as written.
+    pub substituted_for: Option<String>,
+}
+
 /// Find the library a table entry names: the expanded uri when it exists
-/// (relative ones against the table's folder), else, for a uri that starts
-/// with a variable that did not resolve, the rest of the path (or just its
-/// file name) below each folder of `search`, in order. An error names only the
-/// entry's own, unexpanded uri, never a value taken from the environment.
-pub fn resolve_entry(
+/// (relative ones against the table's folder). Only when a variable of the uri
+/// did not resolve is the rest of the path (or just its file name) looked for
+/// below each folder of `search`, in order; that is reported through
+/// [`Resolved::substituted_for`]. An error names only the entry's own,
+/// unexpanded uri, never a value taken from the environment.
+pub fn resolve_entry_noted(
     entry: &TableEntry,
     table_dir: &Path,
     search: &[PathBuf],
     env: &dyn Fn(&str) -> Option<String>,
     named: &[(String, String)],
-) -> Result<PathBuf, String> {
+) -> Result<Resolved, String> {
     let (expanded, missing) = expand_uri(&entry.uri, table_dir, env, named);
     if missing.is_empty() {
         let path = Path::new(&expanded);
@@ -167,8 +177,12 @@ pub fn resolve_entry(
             table_dir.join(path)
         };
         if path.exists() {
-            return Ok(path);
+            return Ok(Resolved {
+                path,
+                substituted_for: None,
+            });
         }
+        return Err(format!("{} does not exist", entry.uri));
     }
     // Below a folder the user gave: what follows the last variable, or the file name.
     let tail = entry
@@ -180,20 +194,30 @@ pub fn resolve_entry(
     for dir in search {
         for candidate in [tail, base] {
             if !candidate.is_empty() && dir.join(candidate).exists() {
-                return Ok(dir.join(candidate));
+                return Ok(Resolved {
+                    path: dir.join(candidate),
+                    substituted_for: Some(entry.uri.clone()),
+                });
             }
         }
     }
-    Err(if missing.is_empty() {
-        format!("{} does not exist", entry.uri)
-    } else {
-        let names: Vec<String> = missing.iter().map(|n| format!("${{{n}}}")).collect();
-        format!(
-            "{} uses {}, which is not set or not allowed (KIPRJMOD, KiCad's KICAD<n>_*_DIR, or NAME=DIR given with --search-path); give a folder with --search-path",
-            entry.uri,
-            names.join(", ")
-        )
-    })
+    let names: Vec<String> = missing.iter().map(|n| format!("${{{n}}}")).collect();
+    Err(format!(
+        "{} uses {}, which is not set or not allowed (KIPRJMOD, KiCad's KICAD<n>_*_DIR, or NAME=DIR given with --search-path); give a folder with --search-path",
+        entry.uri,
+        names.join(", ")
+    ))
+}
+
+/// [`resolve_entry_noted`] without the note.
+pub fn resolve_entry(
+    entry: &TableEntry,
+    table_dir: &Path,
+    search: &[PathBuf],
+    env: &dyn Fn(&str) -> Option<String>,
+    named: &[(String, String)],
+) -> Result<PathBuf, String> {
+    resolve_entry_noted(entry, table_dir, search, env, named).map(|r| r.path)
 }
 
 #[cfg(test)]
@@ -331,6 +355,32 @@ mod tests {
     }
 
     #[test]
+    fn the_search_folder_stands_in_only_for_an_unresolved_variable() {
+        let proj = dir("subst");
+        let shared = dir("subst-shared");
+        std::fs::write(shared.join("lib.kicad_sym"), "").expect("f");
+        let none = |_: &str| None;
+        let entry = |uri: &str| TableEntry {
+            name: "L".into(),
+            kind: "KiCad".into(),
+            uri: uri.into(),
+            options: String::new(),
+            descr: String::new(),
+            disabled: false,
+        };
+        let search = std::slice::from_ref(&shared);
+        // An unresolved variable: found below the folder, and said so.
+        let r = resolve_entry_noted(&entry("${NOPE}/lib.kicad_sym"), &proj, search, &none, &[])
+            .expect("found");
+        assert_eq!(r.path, shared.join("lib.kicad_sym"));
+        assert_eq!(r.substituted_for.as_deref(), Some("${NOPE}/lib.kicad_sym"));
+        // A plain path that is missing is not looked for elsewhere.
+        assert!(
+            resolve_entry_noted(&entry("gone/lib.kicad_sym"), &proj, search, &none, &[]).is_err()
+        );
+    }
+
+    #[test]
     fn entries_resolve_by_table_folder_environment_or_a_search_folder() {
         let t = parse_lib_table(TABLE).expect("parses");
         let proj = dir("resolve");
@@ -366,11 +416,4 @@ mod tests {
             resolve_entry(&t.entries[0], &proj, &[], &env, &[]),
             Ok(shared.join("Device.kicad_sym"))
         );
-        // A path that does not exist is an error naming it.
-        assert!(
-            resolve_entry(&t.entries[2], &proj, &[], &none, &[])
-                .expect_err("missing")
-                .contains("old.lib")
-        );
-    }
-}
+        // A path that do

@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 
 use crate::canon::{
-    cell_number, f32_array, float_array, point_array, toml_f32, toml_float, toml_string,
+    cell_number, clean_cell, f32_array, float_array, point_array, toml_f32, toml_float, toml_string,
 };
 use crate::symbol_file::P;
 
@@ -143,15 +143,19 @@ fn pads_tsv(pads: &[Pad]) -> String {
     out.push('\n');
     for p in pads {
         let cells = [
-            p.number.clone(),
-            p.kind.clone(),
-            p.shape.clone(),
+            clean_cell(&p.number).0,
+            clean_cell(&p.kind).0,
+            clean_cell(&p.shape).0,
             cell_number(p.size[0]),
             cell_number(p.size[1]),
             cell_number(p.pos[0]),
             cell_number(p.pos[1]),
             cell_number(p.rotation),
-            p.layers.join("|"),
+            p.layers
+                .iter()
+                .map(|l| clean_cell(l).0.replace('|', "/"))
+                .collect::<Vec<_>>()
+                .join("|"),
             opt(p.drill),
             opt(p.slot_length),
             opt(p.mask_margin),

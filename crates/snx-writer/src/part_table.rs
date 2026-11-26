@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use serde_json::to_string as json_string;
 use sha2::{Digest, Sha256};
 
-use crate::canon::{toml_key, toml_string};
+use crate::canon::{clean_cell, toml_key, toml_string};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Class {
@@ -449,10 +449,128 @@ pub fn write_classes(classes: &[Class]) -> String {
     o
 }
 
-/// One `[tables.<name>]` block, rows sorted by `row_id` in byte order.
+fn clean(s: &str) -> String {
+    clean_cell(s).0
+}
+
+fn clean_ref(r: &Ref) -> Ref {
+    Ref {
+        library_id: clean(&r.library_id),
+        uuid: clean(&r.uuid),
+    }
+}
+
+fn clean_mpn(m: &Mpn) -> Mpn {
+    Mpn {
+        manufacturer: clean(&m.manufacturer),
+        mpn: clean(&m.mpn),
+        status: clean(&m.status),
+        notes: m.notes.as_deref().map(clean),
+    }
+}
+
+/// A copy of the row in which no text holds a control character or `'''`.
+///
+/// The format defines no escape for a table cell (section 2.2): a cell with a
+/// tab, a line break, another control character or `'''` is refused on save.
+/// JSON cells escape control characters themselves but would still carry a raw
+/// `'''`, which ends the `tsv` block. So every text is cleaned (control
+/// characters and `'''` become spaces) before a cell, or the `content_hash`
+/// over it, is made; callers that want to report the change clean first.
+pub fn sanitize_row(row: &PartRow) -> PartRow {
+    PartRow {
+        row_id: clean(&row.row_id),
+        internal_pn: clean(&row.internal_pn),
+        class: clean(&row.class),
+        datasheets: row
+            .datasheets
+            .iter()
+            .map(|d| LabelledDocument {
+                label: clean(&d.label),
+                document: match &d.document {
+                    Document::Url(u) => Document::Url(clean(u)),
+                    Document::HashPinned { hash, filename } => Document::HashPinned {
+                        hash: clean(hash),
+                        filename: clean(filename),
+                    },
+                },
+            })
+            .collect(),
+        state: clean(&row.state),
+        symbol: clean_ref(&row.symbol),
+        footprint: row.footprint.as_ref().map(clean_ref),
+        alternate_footprints: row
+            .alternate_footprints
+            .iter()
+            .map(|b| FootprintBinding {
+                footprint: clean_ref(&b.footprint),
+                version: clean(&b.version),
+                pin_map_overrides: b
+                    .pin_map_overrides
+                    .iter()
+                    .map(|(a, b)| (clean(a), clean(b)))
+                    .collect(),
+            })
+            .collect(),
+        sim: row.sim.as_ref().map(clean_ref),
+        primary_mpn: clean_mpn(&row.primary_mpn),
+        alternates: row.alternates.iter().map(clean_mpn).collect(),
+        supply: row
+            .supply
+            .iter()
+            .map(|s| Supply {
+                distributor: clean(&s.distributor),
+                sku: clean(&s.sku),
+                url: s.url.as_deref().map(clean),
+                moq: s.moq,
+            })
+            .collect(),
+        parameters: row
+            .parameters
+            .iter()
+            .map(|(k, p)| {
+                let p = match p {
+                    Param::Text(t) => Param::Text(clean(t)),
+                    Param::Measurement { value, unit } => Param::Measurement {
+                        value: *value,
+                        unit: clean(unit),
+                    },
+                    other => other.clone(),
+                };
+                (clean(k), p)
+            })
+            .collect(),
+        pin_map_overrides: row
+            .pin_map_overrides
+            .iter()
+            .map(|(a, b)| (clean(a), clean(b)))
+            .collect(),
+        created: clean(&row.created),
+        updated: clean(&row.updated),
+        version: clean(&row.version),
+        released: row.released,
+        symbol_version: clean(&row.symbol_version),
+        footprint_version: clean(&row.footprint_version),
+        sim_version: clean(&row.sim_version),
+        description: clean(&row.description),
+        alternate_symbols: row
+            .alternate_symbols
+            .iter()
+            .map(|a| AlternateSymbol {
+                symbol: clean_ref(&a.symbol),
+                symbol_version: clean(&a.symbol_version),
+                label: clean(&a.label),
+            })
+            .collect(),
+    }
+}
+
+/// One `[tables.<name>]` block, rows sorted by `row_id` in byte order. Every
+/// row goes through [`sanitize_row`].
 pub fn write_table(table: &Table) -> String {
-    let with_alternates = table.rows.iter().any(|r| !r.alternate_symbols.is_empty());
-    let mut rows: Vec<&PartRow> = table.rows.iter().collect();
+    let clean_rows: Vec<PartRow> = table.rows.iter().map(sanitize_row).collect();
+    let with_alternates = clean_rows.iter().any(|r| !r.alternate_symbols.is_empty());
+    let mut rows: Vec<&PartRow> = clean_rows.iter().collect();
     rows.sort_by(|a, b| a.row_id.as_bytes().cmp(b.row_id.as_bytes()));
     let mut header = COLUMNS.join("\t");
     if with_alternates {
@@ -473,6 +591,63 @@ pub fn write_table(table: &Table) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_cell_of_a_table_holds_a_control_character_or_triple_quotes() {
+        let bad = "a'''b\tc\nd\u{7f}e\r";
+        let row = PartRow {
+            row_id: "id".into(),
+            internal_pn: bad.into(),
+            class: bad.into(),
+            datasheets: vec![LabelledDocument {
+                label: bad.into(),
+                document: Document::Url(bad.into()),
+            }],
+            state: "Draft".into(),
+            symbol: Ref {
+                library_id: bad.into(),
+                uuid: bad.into(),
+            },
+            footprint: None,
+            alternate_footprints: vec![],
+            sim: None,
+            primary_mpn: Mpn {
+                manufacturer: bad.into(),
+                mpn: bad.into(),
+                status: "Primary".into(),
+                notes: Some(bad.into()),
+            },
+            alternates: vec![],
+            supply: vec![],
+            parameters: vec![(bad.into(), Param::Text(bad.into()))],
+            pin_map_overrides: vec![],
+            created: String::new(),
+            updated: String::new(),
+            version: "1.0.0".into(),
+            released: true,
+            symbol_version: String::new(),
+            footprint_version: String::new(),
+            sim_version: String::new(),
+            description: bad.into(),
+            alternate_symbols: vec![],
+        };
+        let text = write_table(&Table {
+            name: "t".into(),
+            rows: vec![row],
+        });
+        let body = text
+            .strip_prefix("\n[tables.t]\ntsv = '''\n")
+            .and_then(|t| t.strip_suffix("'''\n"))
+            .expect("block");
+        assert!(!body.contains("'''"), "{body}");
+        assert!(
+            !body
+                .chars()
+                .any(|c| (c as u32) < 0x20 && c != '\n' && c != '\t' || c == '\u{7f}')
+        );
+        assert_eq!(body.lines().count(), 2, "header and one row");
+        assert_eq!(body.lines().nth(1).map(|l| l.split('\t').count()), Some(22));
+    }
 
     #[test]
     fn json_numbers_follow_the_spec_forms() {

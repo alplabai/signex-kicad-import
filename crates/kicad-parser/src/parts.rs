@@ -275,7 +275,7 @@ fn row(
     let datasheets = match text("Datasheet").filter(|d| *d != "~") {
         Some(url) => vec![LabelledDocument {
             label: String::new(),
-            document: Document::Url(url.to_string()),
+            document: Document::Url(cleaned(url, "datasheet")),
         }],
         None => vec![],
     };
@@ -372,17 +372,31 @@ fn row(
         description,
         alternate_symbols: vec![],
     };
+    // Parameter names and texts and the part's maker go into table cells too.
+    let mut changed = false;
+    let mut scrub = |t: &str| {
+        let (out, c) = clean_cell(t);
+        changed |= c;
+        out
+    };
     for (k, v) in parameters {
-        let (k, _) = clean_cell(&k);
-        row.parameters.push((k, v));
+        let v = match v {
+            Param::Text(t) => Param::Text(scrub(&t)),
+            other => other,
+        };
+        row.parameters.push((scrub(&k), v));
     }
-    for (_, p) in &mut row.parameters {
-        if let Param::Text(t) = p {
-            *t = clean_cell(t).0;
-        }
+    row.primary_mpn.manufacturer = scrub(&row.primary_mpn.manufacturer);
+    row.primary_mpn.mpn = scrub(&row.primary_mpn.mpn);
+    if changed {
+        items.push(Item::new(
+            ItemKind::Part,
+            &source,
+            "part.text_sanitized",
+            Severity::Approximated,
+            "control characters or triple quotes in a property replaced by spaces",
+        ));
     }
-    row.primary_mpn.manufacturer = clean_cell(&row.primary_mpn.manufacturer).0;
-    row.primary_mpn.mpn = clean_cell(&row.primary_mpn.mpn).0;
     items.push(
         Item::new(
             ItemKind::Part,

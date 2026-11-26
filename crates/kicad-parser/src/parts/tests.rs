@@ -201,3 +201,34 @@ fn table_names_lose_the_characters_a_table_cannot_hold_and_stay_unique() {
     assert_eq!(items.len(), 2);
     assert!(items.iter().all(|i| i.code == "part.table_name_changed"));
 }
+
+#[test]
+fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
+    let text = "(kicad_symbol_lib (symbol \"S\"
+  (property \"Reference\" \"U\") (property \"Value\" \"V\t'''\")
+  (property \"Datasheet\" \"http://x/'''\t\n/ds.pdf\") (property \"Description\" \"a'''b\tc\rd\")
+  (property \"Extra\" \"e'''\u{1}\")
+  (symbol \"S_1_1\" (pin passive line (at 0 0 0) (length 1) (name \"A\") (number \"1\"))))
+  (symbol \"T'''x\\t\" (property \"Reference\" \"U\") (symbol \"T'''x\\t_1_1\" (pin passive line (at 0 0 0) (length 1) (name \"A\") (number \"1\")))))";
+    let read = crate::symlib::read_symbol_lib(text, "li'''b").expect("reads");
+    let p = build_parts(&[("li'''b".to_string(), read)], lib_id(), &HashSet::new());
+    let manifest =
+        snx_writer::write_manifest(&lib_id().to_string(), "n", None, &p.classes, &p.tables);
+    let value: toml::Value = toml::from_str(&manifest).expect("the manifest is valid TOML");
+    let (name, table) = value["tables"]
+        .as_table()
+        .and_then(|t| t.iter().next())
+        .expect("a table");
+    assert!(name.contains("li"));
+    let tsv = table["tsv"].as_str().expect("tsv");
+    assert_eq!(tsv.lines().count(), 3, "header and two rows: {tsv}");
+    for line in tsv.lines() {
+        assert_eq!(line.split('\t').count(), 22, "{line:?}");
+        assert!(!line.contains("'''") && !line.chars().any(|c| (c as u32) < 0x20 && c != '\t'));
+    }
+    assert!(
+        p.items
+            .iter()
+            .any(|i| i.code == "part.text_sanitized" && i.severity == Severity::Approximated)
+    );
+}

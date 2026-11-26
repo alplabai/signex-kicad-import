@@ -79,12 +79,29 @@ pub fn parse_lib_table(text: &str) -> Result<LibTable, ParseError> {
     Ok(LibTable { kind, entries })
 }
 
-/// Expand `${VAR}` (and `$(VAR)`) in `uri`. `KIPRJMOD` is `table_dir`; other
-/// names come from `env`. The names that did not resolve are returned.
+/// The variables KiCad itself sets for its libraries: `KICAD<n>_SYMBOL_DIR`,
+/// `KICAD<n>_FOOTPRINT_DIR` and `KICAD<n>_3DMODEL_DIR`, any version `<n>`.
+pub fn is_kicad_library_variable(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("KICAD") else {
+        return false;
+    };
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    matches!(
+        &rest[digits..],
+        "_SYMBOL_DIR" | "_FOOTPRINT_DIR" | "_3DMODEL_DIR"
+    )
+}
+
+/// Expand `${VAR}` (and `$(VAR)`) in `uri`, for an allowed set of names only:
+/// `KIPRJMOD` (the table's folder), the variables the user names explicitly in
+/// `named` (`--search-path NAME=DIR`), and KiCad's own library variables read
+/// from `env`. Any other name, `HOME` and secrets included, is never looked up
+/// and stays as written. The names that did not resolve are returned.
 pub fn expand_uri(
     uri: &str,
     table_dir: &Path,
     env: &dyn Fn(&str) -> Option<String>,
+    named: &[(String, String)],
 ) -> (String, Vec<String>) {
     let mut out = String::new();
     let mut missing = Vec::new();
@@ -103,8 +120,12 @@ pub fn expand_uri(
                 let name = &tail[1..end];
                 let value = if name == "KIPRJMOD" {
                     Some(table_dir.display().to_string())
-                } else {
+                } else if let Some((_, dir)) = named.iter().find(|(n, _)| n == name) {
+                    Some(dir.clone())
+                } else if is_kicad_library_variable(name) {
                     env(name)
+                } else {
+                    None
                 };
                 match value {
                     Some(v) => out.push_str(&v),
@@ -127,15 +148,17 @@ pub fn expand_uri(
 
 /// Find the library a table entry names: the expanded uri when it exists
 /// (relative ones against the table's folder), else, for a uri that starts
-/// with an unknown variable, the rest of the path (or just its file name)
-/// below each folder of `search`, in order.
+/// with a variable that did not resolve, the rest of the path (or just its
+/// file name) below each folder of `search`, in order. An error names only the
+/// entry's own, unexpanded uri, never a value taken from the environment.
 pub fn resolve_entry(
     entry: &TableEntry,
     table_dir: &Path,
     search: &[PathBuf],
     env: &dyn Fn(&str) -> Option<String>,
+    named: &[(String, String)],
 ) -> Result<PathBuf, String> {
-    let (expanded, missing) = expand_uri(&entry.uri, table_dir, env);
+    let (expanded, missing) = expand_uri(&entry.uri, table_dir, env, named);
     if missing.is_empty() {
         let path = Path::new(&expanded);
         let path = if path.is_absolute() {
@@ -162,12 +185,13 @@ pub fn resolve_entry(
         }
     }
     Err(if missing.is_empty() {
-        format!("{expanded} does not exist")
+        format!("{} does not exist", entry.uri)
     } else {
+        let names: Vec<String> = missing.iter().map(|n| format!("${{{n}}}")).collect();
         format!(
-            "{} needs {}, which is not set; give a folder with --search-path",
+            "{} uses {}, which is not set or not allowed (KIPRJMOD, KiCad's KICAD<n>_*_DIR, or NAME=DIR given with --search-path); give a folder with --search-path",
             entry.uri,
-            missing.join(", ")
+            names.join(", ")
         )
     })
 }
@@ -211,17 +235,99 @@ mod tests {
 
     #[test]
     fn variables_expand_from_the_table_folder_and_the_environment() {
-        let env = |n: &str| (n == "HOME_LIBS").then(|| "/libs".to_string());
+        let env = |n: &str| (n == "KICAD8_SYMBOL_DIR").then(|| "/libs".to_string());
+        let named = [("HOME_LIBS".to_string(), "/named".to_string())];
         let (s, missing) = expand_uri(
-            "${KIPRJMOD}/a/${HOME_LIBS}/b$(HOME_LIBS)",
+            "${KIPRJMOD}/a/${HOME_LIBS}/b$(KICAD8_SYMBOL_DIR)",
             Path::new("/proj"),
             &env,
+            &named,
         );
-        assert_eq!(s, "/proj/a//libs/b/libs");
+        assert_eq!(s, "/proj/a//named/b/libs");
         assert!(missing.is_empty());
-        let (s, missing) = expand_uri("${NOPE}/x $ y", Path::new("/p"), &env);
+        let (s, missing) = expand_uri("${NOPE}/x $ y", Path::new("/p"), &env, &named);
         assert_eq!(s, "${NOPE}/x $ y");
         assert_eq!(missing, ["NOPE"]);
+    }
+
+    #[test]
+    fn only_allowed_variables_expand_and_errors_never_show_a_looked_up_value() {
+        // An environment that holds secrets the table must not reach.
+        let env = |n: &str| match n {
+            "SECRET_TOKEN" => Some("hunter2".to_string()),
+            "HOME" => Some("/home/secret".to_string()),
+            "KICAD9_3DMODEL_DIR" => Some("/models".to_string()),
+            _ => None,
+        };
+        let (s, missing) = expand_uri(
+            "${HOME}/x/${SECRET_TOKEN}/y/${KICAD9_3DMODEL_DIR}",
+            Path::new("/p"),
+            &env,
+            &[],
+        );
+        assert_eq!(s, "${HOME}/x/${SECRET_TOKEN}/y//models");
+        assert_eq!(missing, ["HOME", "SECRET_TOKEN"]);
+        for name in [
+            "KICAD8_SYMBOL_DIR",
+            "KICAD_FOOTPRINT_DIR",
+            "KICAD10_3DMODEL_DIR",
+        ] {
+            assert!(is_kicad_library_variable(name), "{name}");
+        }
+        for name in [
+            "KICAD8_SECRET",
+            "XKICAD8_SYMBOL_DIR",
+            "KICAD8_SYMBOL_DIRX",
+            "HOME",
+            "KICAD",
+        ] {
+            assert!(!is_kicad_library_variable(name), "{name}");
+        }
+        // A user-named variable is the explicit way to supply another one; the
+        // environment is not consulted for it.
+        let named = [("MYLIBS".to_string(), "/mine".to_string())];
+        assert_eq!(
+            expand_uri("${MYLIBS}/a", Path::new("/p"), &env, &named).0,
+            "/mine/a"
+        );
+        // The error for an entry names the uri as written and the variable, not a value.
+        let proj = dir("leak");
+        let entry = |uri: &str| TableEntry {
+            name: "L".into(),
+            kind: "KiCad".into(),
+            uri: uri.into(),
+            options: String::new(),
+            descr: String::new(),
+            disabled: false,
+        };
+        let err = resolve_entry(
+            &entry("${SECRET_TOKEN}/lib.kicad_sym"),
+            &proj,
+            &[],
+            &env,
+            &[],
+        )
+        .expect_err("unresolved");
+        assert!(
+            err.contains("${SECRET_TOKEN}/lib.kicad_sym") && !err.contains("hunter2"),
+            "{err}"
+        );
+        let err = resolve_entry(&entry("${HOME}/lib.kicad_sym"), &proj, &[], &env, &[])
+            .expect_err("unresolved");
+        assert!(!err.contains("/home/secret"), "{err}");
+        // A path that expands from an allowed variable but is missing: the uri as written.
+        let err = resolve_entry(
+            &entry("${KICAD9_3DMODEL_DIR}/nope.kicad_sym"),
+            &proj,
+            &[],
+            &env,
+            &[],
+        )
+        .expect_err("missing");
+        assert!(
+            err.contains("${KICAD9_3DMODEL_DIR}/nope.kicad_sym") && !err.contains("/models"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -232,11 +338,11 @@ mod tests {
         let none = |_: &str| None;
         // ${KIPRJMOD} is the table's folder.
         assert_eq!(
-            resolve_entry(&t.entries[1], &proj, &[], &none),
+            resolve_entry(&t.entries[1], &proj, &[], &none, &[]),
             Ok(proj.join("mine.kicad_sym"))
         );
         // An unset variable is reported, with the way out.
-        let err = resolve_entry(&t.entries[0], &proj, &[], &none).expect_err("unset");
+        let err = resolve_entry(&t.entries[0], &proj, &[], &none, &[]).expect_err("unset");
         assert!(
             err.contains("KICAD8_SYMBOL_DIR") && err.contains("--search-path"),
             "{err}"
@@ -245,18 +351,24 @@ mod tests {
         let shared = dir("shared");
         std::fs::write(shared.join("Device.kicad_sym"), "").expect("f");
         assert_eq!(
-            resolve_entry(&t.entries[0], &proj, std::slice::from_ref(&shared), &none),
+            resolve_entry(
+                &t.entries[0],
+                &proj,
+                std::slice::from_ref(&shared),
+                &none,
+                &[]
+            ),
             Ok(shared.join("Device.kicad_sym"))
         );
         // The environment works too.
         let env = |n: &str| (n == "KICAD8_SYMBOL_DIR").then(|| shared.display().to_string());
         assert_eq!(
-            resolve_entry(&t.entries[0], &proj, &[], &env),
+            resolve_entry(&t.entries[0], &proj, &[], &env, &[]),
             Ok(shared.join("Device.kicad_sym"))
         );
         // A path that does not exist is an error naming it.
         assert!(
-            resolve_entry(&t.entries[2], &proj, &[], &none)
+            resolve_entry(&t.entries[2], &proj, &[], &none, &[])
                 .expect_err("missing")
                 .contains("old.lib")
         );

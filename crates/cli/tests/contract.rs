@@ -737,7 +737,7 @@ fn library_tables_convert_every_library_they_list_and_bind_footprints_by_nicknam
         "(sym_lib_table (version 7)
   (lib (name \"Mine\")(type \"KiCad\")(uri \"${KIPRJMOD}/mine.kicad_sym\")(options \"\")(descr \"\"))
   (lib (name \"Shared\")(type \"KiCad\")(uri \"${SNX_TEST_SHARED}/power.kicad_sym\")(options \"\")(descr \"\"))
-  (lib (name \"Gone\")(type \"KiCad\")(uri \"${SNX_TEST_UNSET}/gone.kicad_sym\")(options \"\")(descr \"\"))
+  (lib (name \"Gone\")(type \"KiCad\")(uri \"${SECRET_TOKEN}/gone.kicad_sym\")(options \"\")(descr \"\"))
   (lib (name \"Old\")(type \"Legacy\")(uri \"old.lib\")(options \"\")(descr \"\"))
   (lib (name \"Off\")(type \"KiCad\")(uri \"off.kicad_sym\")(options \"\")(descr \"\")(disabled))
 )",
@@ -750,12 +750,14 @@ fn library_tables_convert_every_library_they_list_and_bind_footprints_by_nicknam
     .expect("table");
     let out_dir = dir.join("out");
     let out = common::bin()
-        .env("SNX_TEST_SHARED", fixtures_dir("symbols"))
-        .env_remove("SNX_TEST_UNSET")
+        // A secret in the environment that a crafted table must not reach.
+        .env("SECRET_TOKEN", "hunter2")
         .args([
             "library",
             sym_dir.join("sym-lib-table").to_str().expect("utf8"),
             sym_dir.join("fp-lib-table").to_str().expect("utf8"),
+            "--search-path",
+            &format!("SNX_TEST_SHARED={}", fixtures_dir("symbols").display()),
             "--output",
             out_dir.to_str().expect("utf8"),
             "--json",
@@ -769,6 +771,16 @@ fn library_tables_convert_every_library_they_list_and_bind_footprints_by_nicknam
         String::from_utf8_lossy(&out.stderr)
     );
     let report = report_of(&out_dir);
+    // The secret is never read: nothing shows its value, the error shows the uri as written.
+    let everything = format!(
+        "{}{}{}{}",
+        report,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        std::fs::read_to_string(out_dir.join("import-report.md")).expect("md")
+    );
+    assert!(!everything.contains("hunter2"));
+    assert!(everything.contains("${SECRET_TOKEN}/gone.kicad_sym"));
     let items = report["items"].as_array().expect("items");
     let by_code = |code: &str| -> Vec<&str> {
         items

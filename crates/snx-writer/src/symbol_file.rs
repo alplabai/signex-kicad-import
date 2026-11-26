@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 
 use crate::canon::{
-    cell_number, float_array, int_array, point_array, toml_float, toml_key, toml_string,
+    cell_number, clean_cell, float_array, int_array, point_array, toml_float, toml_key, toml_string,
 };
 
 pub type P = [f64; 2];
@@ -222,6 +222,13 @@ const PIN_COLUMNS: [&str; 20] = [
     "part_number",
 ];
 
+/// A text cell of the pin block: the format refuses a tab, a line break, any
+/// other control character and the triple quote (and Signex's own pin writer
+/// lets some through, which makes the file unreadable), so they become spaces.
+fn text_cell(s: &str) -> String {
+    clean_cell(s).0
+}
+
 fn opt(v: Option<f64>) -> String {
     v.map_or_else(String::new, cell_number)
 }
@@ -235,15 +242,19 @@ fn pins_tsv(pins: &[Pin]) -> String {
     out.push('\n');
     for p in pins {
         let mut cells = vec![
-            p.number.clone(),
-            p.name.clone(),
+            text_cell(&p.number),
+            text_cell(&p.name),
             p.electrical.clone(),
             cell_number(p.pos[0]),
             cell_number(p.pos[1]),
             p.orientation.token().to_string(),
             cell_number(p.length),
-            p.description.clone(),
-            p.function.join("|"),
+            text_cell(&p.description),
+            p.function
+                .iter()
+                .map(|f| text_cell(f).replace('|', "/"))
+                .collect::<Vec<_>>()
+                .join("|"),
             opt(p.package_length),
             opt(p.propagation_delay_ns),
             p.designator_visible.to_string(),
@@ -392,5 +403,70 @@ fn write_graphic(o: &mut String, g: &Graphic) {
             o.push_str(&float_array("to", to));
             let _ = writeln!(o, "corner_radius = {}", toml_float(*corner_radius));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pin_texts_with_control_characters_or_triple_quotes_stay_loadable() {
+        let mut pin = Pin::new(
+            "1\r",
+            "A\tB'''C\u{1}",
+            "Input",
+            [0.0, 0.0],
+            Orientation::Right,
+            1.0,
+        );
+        pin.description = "line\nbreak".into();
+        pin.function = vec!["x|y".into(), "tab\t".into()];
+        let file = SymbolFile {
+            file_uuid: "f".into(),
+            display_name: "n\u{1}'''".into(),
+            created: String::new(),
+            updated: String::new(),
+            symbols: vec![Symbol {
+                uuid: "u".into(),
+                name: "N\r".into(),
+                anchor: [0.0, 0.0],
+                pins: vec![pin],
+                designator: "U?".into(),
+                comment: "*".into(),
+                designator_pos: None,
+                comment_pos: None,
+                description: "d'''e".into(),
+                component_type: "Standard".into(),
+                mirrored: false,
+                local_fill_color: None,
+                local_line_color: None,
+                local_pin_color: None,
+                version: "1.0.0".into(),
+                released: false,
+                part_count: 1,
+                created: String::new(),
+                updated: String::new(),
+                graphics: vec![],
+                params: vec![],
+            }],
+        };
+        let text = write_symbol_file(&file);
+        toml::from_str::<toml::Value>(&text).expect("the envelope is valid TOML");
+        // The whole envelope still parses as TOML, and the pin block is clean.
+        let tsv = text
+            .split("pins_tsv = '''\n")
+            .nth(1)
+            .and_then(|t| t.split("'''\n").next())
+            .expect("pins block");
+        assert!(
+            !tsv.chars()
+                .any(|c| c == '\r' || ((c as u32) < 0x20 && c != '\n' && c != '\t')),
+            "{tsv:?}"
+        );
+        let row: Vec<&str> = tsv.lines().nth(1).expect("row").split('\t').collect();
+        assert_eq!(row.len(), 20, "{row:?}");
+        assert_eq!(row[8], "x/y|tab ");
+        assert_eq!(tsv.lines().count(), 2);
     }
 }

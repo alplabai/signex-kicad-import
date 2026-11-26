@@ -88,8 +88,13 @@ row. Rows have no alternates, supply, simulation model or pin map.
 `sym-lib-table` and `fp-lib-table` (inputs by their file names) list libraries by
 nickname, type, uri, options and description. Each `KiCad` entry is converted
 under its nickname, which is what `Lib:Name` footprint properties name. The uri
-may use `${VAR}` variables: `${KIPRJMOD}` is the table's folder, others come
-from the environment; an unset variable or a missing path falls back to the rest
+may use `${VAR}` variables, but only from an allowlist: `${KIPRJMOD}` (the
+table's folder), KiCad's own `KICAD<n>_SYMBOL_DIR` / `_FOOTPRINT_DIR` /
+`_3DMODEL_DIR` (from the environment) and any `NAME` given as
+`--search-path NAME=DIR`. No other variable is ever read, so a table cannot
+make the converter expose the environment; errors show the uri as written.
+(Table cells, pin and pad cells never hold control characters or `'''`: they
+become spaces, reported as `part.text_sanitized` / `symbol.text_sanitized`.) an unset variable or a missing path falls back to the rest
 of the path, then the file name, below each `--search-path` folder. Entries
 that cannot be used are error items and never stop the others: an unresolved uri
 (`library.table_entry_unresolved`), a type other than `KiCad`

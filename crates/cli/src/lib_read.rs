@@ -49,6 +49,7 @@ pub fn read_inputs(
     search: &[PathBuf],
     emitter: &Emitter,
 ) -> Result<Read> {
+    let (search, vars) = crate::lib_inputs::split_search_paths(search);
     let mut r = Reader {
         read: Read {
             sources: Vec::new(),
@@ -81,7 +82,7 @@ pub fn read_inputs(
                 );
                 r.footprint_file(path, &library);
             }
-            InputKind::SymLibTable | InputKind::FpLibTable => r.table(path, search)?,
+            InputKind::SymLibTable | InputKind::FpLibTable => r.table(path, &search, &vars)?,
         }
         emitter.progress(done + 1, Some(inputs.len()), &name);
     }
@@ -188,7 +189,7 @@ impl Reader {
 
     /// Read every library a `sym-lib-table` / `fp-lib-table` lists. An entry
     /// that cannot be used is an error item; the others are still converted.
-    fn table(&mut self, path: &Path, search: &[PathBuf]) -> Result<()> {
+    fn table(&mut self, path: &Path, search: &[PathBuf], vars: &[(String, String)]) -> Result<()> {
         let name = file_name(path);
         let table = match std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
@@ -235,7 +236,7 @@ impl Reader {
                 );
                 continue;
             }
-            let resolved = match resolve_entry(entry, dir, search, &env) {
+            let resolved = match resolve_entry(entry, dir, search, &env, vars) {
                 Ok(p) => p,
                 Err(why) => {
                     let message = format!("{}: {why}; not converted", entry.name);

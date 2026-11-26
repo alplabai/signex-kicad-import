@@ -71,6 +71,32 @@ pub struct LibraryArgs {
     pub progress: bool,
 }
 
+/// `--search-path` takes a folder, or `NAME=DIR`, which also names the
+/// variable `${NAME}` for library table uris (the only way besides KiCad's own
+/// `KICAD<n>_*_DIR` to supply one; other variables are never read from the
+/// environment). A path that exists as written is always a folder.
+pub fn split_search_paths(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<(String, String)>) {
+    let mut dirs = Vec::new();
+    let mut vars = Vec::new();
+    for p in paths {
+        if p.is_dir() {
+            dirs.push(p.clone());
+            continue;
+        }
+        let text = p.to_string_lossy();
+        if let Some((name, dir)) = text.split_once('=')
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && Path::new(dir).is_dir()
+        {
+            vars.push((name.to_string(), dir.to_string()));
+            dirs.push(PathBuf::from(dir));
+        }
+    }
+    (dirs, vars)
+}
+
 /// What a source path is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
@@ -140,10 +166,18 @@ pub fn validate(args: &LibraryArgs) -> Result<(Vec<(PathBuf, InputKind)>, PathBu
     {
         return Err(format!("--models-dir is not a folder: {}", dir.display()));
     }
-    for dir in &args.search_path {
-        if !dir.is_dir() {
-            return Err(format!("--search-path is not a folder: {}", dir.display()));
-        }
+    let (dirs, vars) = split_search_paths(&args.search_path);
+    if dirs.len() != args.search_path.len() {
+        let bad = args.search_path.iter().find(|p| {
+            !p.is_dir()
+                && !vars
+                    .iter()
+                    .any(|(n, d)| p.to_string_lossy() == format!("{n}={d}"))
+        });
+        return Err(format!(
+            "--search-path is not a folder or NAME=DIR: {}",
+            bad.map_or_else(String::new, |p| p.display().to_string())
+        ));
     }
     let mut inputs = Vec::new();
     for path in &args.inputs {

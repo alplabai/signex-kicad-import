@@ -116,6 +116,9 @@ pub struct Table {
     /// Rows kept as an earlier run wrote them: `(row_id, the line of cells)`.
     /// An update keeps the bytes of a row whose content did not change.
     pub kept: Vec<(String, String)>,
+    /// A table of the user's with columns of its own, kept verbatim (the text
+    /// between `tsv = '''` and the closing quotes); rows and kept are unused.
+    pub raw_tsv: Option<String>,
 }
 
 /// A JSON number as section 5.2 gives it: shortest round trip, integral
@@ -571,6 +574,12 @@ pub fn sanitize_row(row: &PartRow) -> PartRow {
 /// One `[tables.<name>]` block, rows sorted by `row_id` in byte order. Every
 /// row goes through [`sanitize_row`].
 pub fn write_table(table: &Table) -> String {
+    if let Some(raw) = &table.raw_tsv {
+        return format!(
+            "\n[tables.{}]\ntsv = '''\n{raw}'''\n",
+            toml_key(&table.name)
+        );
+    }
     let clean_rows: Vec<PartRow> = table.rows.iter().map(sanitize_row).collect();
     let with_alternates = clean_rows.iter().any(|r| !r.alternate_symbols.is_empty());
     let mut rows: Vec<&PartRow> = clean_rows.iter().collect();
@@ -644,6 +653,7 @@ mod tests {
             name: "t".into(),
             rows: vec![row],
             kept: vec![],
+            raw_tsv: None,
         });
         let body = text
             .strip_prefix("\n[tables.t]\ntsv = '''\n")

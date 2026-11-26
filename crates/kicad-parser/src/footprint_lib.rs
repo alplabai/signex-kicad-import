@@ -302,6 +302,7 @@ pub fn convert_footprint(
         created: EPOCH.to_string(),
         updated: EPOCH.to_string(),
         footprint: f,
+        models: Vec::new(),
     })
 }
 
@@ -388,6 +389,7 @@ fn adapt(b: &BoardFootprint, margins: Margins, sink: &mut Sink<'_>) -> out::Foot
         height_mm: None,
         courtyard: None,
         body: out::Body3d::default(),
+        step: None,
     };
     let mut courtyard: Vec<&FootprintGraphic> = Vec::new();
     for g in &b.graphics {
@@ -572,7 +574,7 @@ fn pad(p: &BoardPad, margins: Margins, sink: &mut Sink<'_>) -> Option<out::Pad> 
             sink.note_once(
                 "pad.slot_not_placeable",
                 Severity::Approximated,
-                "Signex cannot place this footprint on a board until slotted drills are supported; the footprint is written exactly",
+                "Signex cannot place this footprint on a board until slotted drills are supported (signex #3128); the footprint is written exactly",
             );
             if s.y > s.x {
                 if matches!(

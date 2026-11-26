@@ -1074,3 +1074,83 @@ fn a_report_that_lists_paths_outside_the_library_makes_an_update_delete_nothing(
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[test]
+fn an_update_deletes_only_what_the_converter_wrote_itself() {
+    let dir = scratch("lib-ledger");
+    let (a, b) = (dir.join("A.kicad_sym"), dir.join("B.kicad_sym"));
+    std::fs::write(&a, TINY).expect("a");
+    std::fs::write(&b, TINY).expect("b");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let id = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    let go = |inputs: &[&std::path::Path], extra: &[&str]| {
+        let mut v: Vec<&str> = vec!["library"];
+        v.extend(inputs.iter().map(|p| p.to_str().expect("utf8")));
+        v.extend(["--output", out, "--library-id", id, "--name", "L", "--json"]);
+        v.extend(extra);
+        run(&v)
+    };
+    assert_eq!(go(&[&a, &b], &[]).status.code(), Some(0));
+
+    // The user adds a part row (to our table and to a table of their own), a
+    // footprint file, and a class.
+    let manifest_path = out_dir.join("L.snxlib");
+    let mut manifest = std::fs::read_to_string(&manifest_path).expect("m");
+    let start = manifest.find("[tables.A]\ntsv = '''\n").expect("table A")
+        + "[tables.A]\ntsv = '''\n".len();
+    let header_end = start + manifest[start..].find('\n').expect("header") + 1;
+    let row_end = header_end + manifest[header_end..].find('\n').expect("row");
+    let mut cells: Vec<String> = manifest[header_end..row_end]
+        .split('\t')
+        .map(str::to_string)
+        .collect();
+    cells[0] = "00000000-0000-4000-8000-000000000001".into();
+    cells[1] = "R-10K".into();
+    let user_row = cells.join("\t");
+    manifest.insert_str(header_end, &format!("{user_row}\n"));
+    manifest.push_str("\n[tables.Mine]\ntsv = '''\nrow_id\tinternal_pn\n00000000-0000-4000-8000-000000000002\tMINE-1\n'''\n");
+    std::fs::write(&manifest_path, &manifest).expect("m");
+    std::fs::create_dir_all(out_dir.join("footprints")).expect("d");
+    std::fs::write(
+        out_dir.join("footprints/00000000-0000-4000-8000-0000000000aa.snxfpt"),
+        "user footprint",
+    )
+    .expect("fp");
+    std::fs::write(out_dir.join("symbols/user.snxsym"), "user symbols").expect("sym");
+
+    // B leaves the inputs: B's recorded files and rows go, nothing else.
+    let r = go(&[&a], &["--update"]);
+    assert!(
+        matches!(r.status.code(), Some(0 | 2)),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(
+        out_dir
+            .join("footprints/00000000-0000-4000-8000-0000000000aa.snxfpt")
+            .is_file()
+    );
+    assert!(out_dir.join("symbols/user.snxsym").is_file());
+    assert!(!out_dir.join("symbols/b.snxsym").exists());
+    let after = std::fs::read_to_string(&manifest_path).expect("m");
+    assert!(after.contains("R-10K"), "the user's row survives");
+    assert!(
+        after.contains("MINE-1") && after.contains("[tables.Mine]"),
+        "the user's table survives"
+    );
+    assert!(after.contains(&user_row), "byte for byte");
+    assert!(!after.contains("[tables.B]"));
+    let report = report_of(&out_dir);
+    let ledger_rows = report["ledger"]["rows"].as_array().expect("rows");
+    assert!(
+        ledger_rows.iter().all(|r| r["library"] == "A"),
+        "{ledger_rows:?}"
+    );
+    assert!(
+        !report
+            .to_string()
+            .contains("00000000-0000-4000-8000-000000000001")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

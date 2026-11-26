@@ -164,6 +164,9 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         items: read.items.clone(),
         files: Vec::new(),
         file_libraries: Vec::new(),
+        ledger_rows: Vec::new(),
+        ledger_symbols: Vec::new(),
+        ledger_footprints: Vec::new(),
     };
     // A run that read its sources leaves its report even when it fails.
     let report_path = match report.write(&out) {
@@ -194,7 +197,8 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
     report.items.extend(built.items);
     report.written_counts = built.written;
     report.source_counts.parts = built.candidates;
-    let keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
+    let mut keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
+    keep.extend(built.protected.iter().cloned());
     // An update removes only what the earlier run wrote from libraries that
     // read cleanly this run; the rest of the folder is not touched.
     let stale = previous
@@ -222,6 +226,27 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
                 })
         })
         .collect();
+    // The ledger: what this run wrote, plus what an earlier run wrote that stays.
+    report.ledger_rows = built.ledger_rows.clone();
+    report.ledger_symbols = built.ledger_symbols.clone();
+    report.ledger_footprints = built.ledger_footprints.clone();
+    if let Some(p) = &previous {
+        let stay: Vec<String> = report
+            .files
+            .iter()
+            .filter(|f| !built.files.iter().any(|(r, _)| r == *f))
+            .cloned()
+            .collect();
+        let (syms, fps) = p.retained_ids(&stay);
+        report.ledger_symbols.extend(syms);
+        report.ledger_footprints.extend(fps);
+    }
+    report.ledger_symbols.sort();
+    report.ledger_symbols.dedup();
+    report.ledger_footprints.sort();
+    report.ledger_footprints.dedup();
+    report.ledger_rows.sort();
+    report.ledger_rows.dedup();
     if args.dry_run {
         // Nothing was written: a later update must not think these files exist.
         report.files.clear();

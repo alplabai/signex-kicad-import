@@ -28,6 +28,14 @@ pub struct Built {
     pub candidates: usize,
     /// The source library of each library file, by relative path.
     pub file_libs: Vec<(String, String)>,
+    /// Existing envelopes this run left alone because they hold symbols the
+    /// user added; they count as written for the update's bookkeeping.
+    pub protected: Vec<String>,
+    /// What this run wrote itself: row ids with their library, symbol ids,
+    /// footprint ids (the report's ledger).
+    pub ledger_rows: Vec<(String, String)>,
+    pub ledger_symbols: Vec<String>,
+    pub ledger_footprints: Vec<String>,
 }
 
 /// A file name for a symbol envelope: lower-case ASCII letters and digits,
@@ -82,6 +90,9 @@ pub fn build(
     update: Option<&UpdateCx<'_>>,
 ) -> Built {
     let mut file_libs: Vec<(String, String)> = Vec::new();
+    let mut protected: Vec<String> = Vec::new();
+    let mut ledger_symbols: Vec<String> = Vec::new();
+    let mut ledger_footprints: Vec<String> = Vec::new();
     let mut symbol_versions: HashMap<String, String> = HashMap::new();
     let mut footprint_versions: HashMap<String, String> = HashMap::new();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -111,6 +122,20 @@ pub fn build(
                     .map(|s| (s.uuid.clone(), s.version.clone())),
             );
         }
+        if update.is_some_and(|u| u.previous.has_user_symbols(&rel)) {
+            // The user added symbols to this envelope: it stays as it is.
+            items.push(Item::new(
+                ItemKind::Library,
+                library.clone(),
+                "update.envelope_has_user_items",
+                Severity::Dropped,
+                format!("{rel} holds symbols this converter did not write; it was not rewritten, so its symbols are not updated"),
+            ));
+            written.symbols -= file.symbols.len();
+            protected.push(rel);
+            continue;
+        }
+        ledger_symbols.extend(file.symbols.iter().map(|s| s.uuid.clone()));
         file_libs.push((rel.clone(), library.clone()));
         files.push((rel, write_symbol_file(&file).into_bytes()));
         for s in &file.symbols {
@@ -149,6 +174,7 @@ pub fn build(
             )
             .with_id(&fp.footprint.uuid),
         );
+        ledger_footprints.push(fp.footprint.uuid.clone());
         file_libs.push((rel.clone(), lib.clone()));
         files.push((rel, write_footprint_file(&fp).into_bytes()));
         done += 1;
@@ -169,14 +195,18 @@ pub fn build(
         None => Update::default(),
     };
     let mut parts = build_parts(&read.symbols, library_id, &footprints, &row_update);
+    let generated: HashSet<String> = parts.generated.iter().map(|(id, _)| id.clone()).collect();
+    let mut ledger_rows = parts.generated.clone();
     if let Some(u) = update {
-        u.previous.carry_over(
+        let retained = u.previous.carry_over(
+            &generated,
             &read.clean_libraries,
             &read.attempted_libraries,
             &mut parts.tables,
             &mut parts.classes,
             &mut parts.items,
         );
+        ledger_rows.extend(u.previous.retained_rows(&retained));
     }
     written.parts = parts.rows;
     items.extend(parts.items);
@@ -197,6 +227,10 @@ pub fn build(
         items,
         candidates: parts.candidates,
         file_libs,
+        protected,
+        ledger_rows,
+        ledger_symbols,
+        ledger_footprints,
     }
 }
 

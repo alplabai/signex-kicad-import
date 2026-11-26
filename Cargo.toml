@@ -26,6 +26,10 @@ clap = { version = "4", features = ["derive"] }
 # Source hashes in the library report
 sha2 = "0.10"
 
+# Embedded 3D models: raw deflate and base64
+flate2 = "1"
+base64 = "0.22"
+
 # Tests: schema patterns
 regex = "1"
 

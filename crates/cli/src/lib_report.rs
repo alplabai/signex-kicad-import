@@ -30,6 +30,10 @@ pub struct LibraryReport {
     /// each came from (an update deletes only files it finds listed here).
     pub files: Vec<String>,
     pub file_libraries: Vec<(String, String)>,
+    /// The ids this converter wrote itself; an update deletes only these.
+    pub ledger_rows: Vec<(String, String)>,
+    pub ledger_symbols: Vec<String>,
+    pub ledger_footprints: Vec<String>,
 }
 
 impl LibraryReport {
@@ -50,6 +54,11 @@ impl LibraryReport {
             },
             "items": self.items.iter().map(Item::to_json).collect::<Vec<_>>(),
             "files": self.files,
+            "ledger": {
+                "rows": self.ledger_rows.iter().map(|(id, lib)| json!({ "id": id, "library": lib })).collect::<Vec<_>>(),
+                "symbols": self.ledger_symbols,
+                "footprints": self.ledger_footprints,
+            },
             "file_libraries": self.file_libraries.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
         })
     }

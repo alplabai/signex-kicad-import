@@ -29,6 +29,7 @@ mod layers;
 pub mod lib_table;
 pub mod libids;
 pub mod message_codes;
+pub mod models;
 mod nets;
 mod outline;
 mod pad_copper;

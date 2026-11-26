@@ -312,6 +312,10 @@ fn an_oval_drill_is_a_slot_of_the_larger_size() {
         .expect("item");
     assert_eq!(item.severity, Severity::Approximated);
     assert_eq!(
+        item.message,
+        "Signex cannot place this footprint on a board until slotted drills are supported (signex #3128); the footprint is written exactly"
+    );
+    assert_eq!(
         item_codes(&items)
             .iter()
             .filter(|c| **c == "pad.slot_not_placeable")

@@ -20,7 +20,32 @@ pub struct FootprintFile {
     pub created: String,
     pub updated: String,
     pub footprint: Footprint,
+    /// Embedded STEP models (section 8), one per distinct hash; the file's
+    /// token is `snxfpt/1.4` when there is any.
+    pub models: Vec<Model>,
 }
+
+/// A STEP model embedded in the file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Model {
+    /// Lower-case hex SHA-256 of the raw bytes.
+    pub hash: String,
+    pub filename: String,
+    /// The raw (uncompressed) STEP bytes.
+    pub bytes: std::sync::Arc<[u8]>,
+}
+
+/// The footprint's reference to an embedded model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepAttachment {
+    pub content_hash: String,
+    pub filename: String,
+    pub offset_xyz: [f64; 3],
+    pub rotation_xyz: [f64; 3],
+}
+
+/// The most raw bytes a model may have (256 MiB).
+pub const MAX_MODEL_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Footprint {
@@ -42,6 +67,7 @@ pub struct Footprint {
     pub height_mm: Option<f64>,
     pub courtyard: Option<Vec<P>>,
     pub body: Body3d,
+    pub step: Option<StepAttachment>,
 }
 
 /// The extruded body; the values are 32-bit floats in the format.
@@ -172,7 +198,12 @@ fn pads_tsv(pads: &[Pad]) -> String {
 pub fn write_footprint_file(file: &FootprintFile) -> String {
     let f = &file.footprint;
     let mut o = String::new();
-    let _ = writeln!(o, "format = \"snxfpt/1.1\"");
+    let token = if file.models.is_empty() {
+        "snxfpt/1.1"
+    } else {
+        "snxfpt/1.4"
+    };
+    let _ = writeln!(o, "format = {}", toml_string(token));
     let _ = writeln!(o, "file_uuid = {}", toml_string(&file.file_uuid));
     let _ = writeln!(o, "display_name = {}", toml_string(&file.display_name));
     let _ = writeln!(o, "created = {}", toml_string(&file.created));
@@ -228,8 +259,43 @@ pub fn write_footprint_file(file: &FootprintFile) -> String {
     let _ = writeln!(o, "offset_z_mm = {}", toml_f32(f.body.offset_z_mm));
     o.push_str(&f32_array("top_color", &f.body.top_color));
     o.push_str(&f32_array("side_color", &f.body.side_color));
+    if let Some(s) = &f.step {
+        o.push_str("\n[footprints.step_attachment]\n");
+        let _ = writeln!(o, "content_hash = {}", toml_string(&s.content_hash));
+        let _ = writeln!(o, "filename = {}", toml_string(&s.filename));
+        o.push_str(&float_array("offset_xyz", &s.offset_xyz));
+        o.push_str(&float_array("rotation_xyz", &s.rotation_xyz));
+    }
     o.push_str("\n[footprints.pcb_params]\n");
+    let mut models: Vec<&Model> = file.models.iter().collect();
+    models.sort_by(|a, b| a.hash.cmp(&b.hash));
+    for m in models {
+        write_model(&mut o, m);
+    }
     o
+}
+
+/// One `[[models]]` entry: raw deflate, base64 wrapped at 76 columns.
+fn write_model(o: &mut String, m: &Model) {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+    let packed = enc
+        .write_all(&m.bytes)
+        .and_then(|()| enc.finish())
+        .unwrap_or_default();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(packed);
+    o.push_str("\n[[models]]\n");
+    let _ = writeln!(o, "hash = {}", toml_string(&m.hash));
+    let _ = writeln!(o, "filename = {}", toml_string(&m.filename));
+    o.push_str("encoding = \"deflate+base64\"\n");
+    let _ = writeln!(o, "size = {}", m.bytes.len());
+    o.push_str("data = '''\n");
+    for line in b64.as_bytes().chunks(76) {
+        o.push_str(std::str::from_utf8(line).unwrap_or(""));
+        o.push('\n');
+    }
+    o.push_str("'''\n");
 }
 
 fn write_graphic(o: &mut String, list: &str, g: &Graphic) {

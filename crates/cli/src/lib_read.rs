@@ -343,4 +343,7 @@ pub fn footprint_id(library_id: Uuid, lib: &str, is_file: bool, name: &str) -> S
     let kind = if is_file {
         "footprint-file"
     } else {
-        "foo
+        "footprint"
+    };
+    item_id(library_id, kind, lib, name).to_string()
+}

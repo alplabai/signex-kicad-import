@@ -223,6 +223,7 @@ fn footprint(uuid: &str, name: &str, description: &str, designator: &str) -> fpt
         height_mm: None,
         courtyard: None,
         body: fpt::Body3d::default(),
+        step: None,
     }
 }
 
@@ -281,6 +282,7 @@ fn a_footprint_with_lines_matches_the_fixture_byte_for_byte() {
         created: CREATED.into(),
         updated: UPDATED.into(),
         footprint: f,
+        models: vec![],
     };
     assert_eq!(write_footprint_file(&file), want);
 }
@@ -320,6 +322,7 @@ fn a_footprint_with_a_pin_one_marker_matches_the_fixture_byte_for_byte() {
         created: CREATED.into(),
         updated: UPDATED.into(),
         footprint: f,
+        models: vec![],
     };
     assert_eq!(write_footprint_file(&file), want);
 }
@@ -512,12 +515,14 @@ mod parts {
             write_table(&Table {
                 name: "logic".into(),
                 rows: vec![c],
-                kept: vec![]
+                kept: vec![],
+                raw_tsv: None
             }),
             write_table(&Table {
                 name: "resistors".into(),
                 rows: vec![b, a],
-                kept: vec![]
+                kept: vec![],
+                raw_tsv: None
             })
         );
         let from = want.find("\n[[classes]]").expect("classes");
@@ -542,4 +547,80 @@ mod parts {
             assert_eq!(hash_document(&row), want, "{name}");
         }
     }
+}
+
+#[test]
+fn an_embedded_model_inflates_to_the_fixtures_step_file() {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    let Some(dir) = std::env::var_os("SIGNEX_FORMAT_FIXTURES") else {
+        eprintln!("skipped: SIGNEX_FORMAT_FIXTURES is not set");
+        return;
+    };
+    let Some(want) = fixture("footprints/01940000-0000-7000-8000-000000000022.snxfpt") else {
+        return;
+    };
+    let hash = "25bdbce8f3930e778844aff9e6deb9dd4aa5f01315979d7f7eebc68bbc301313";
+    let step = std::fs::read(std::path::Path::new(&dir).join(format!("library/step/{hash}.step")))
+        .expect("step file");
+    let mut f = footprint(
+        "01940000-0000-7000-8000-000000000022",
+        "R_0805",
+        "Chip resistor, 0805 (2012 metric)",
+        "R?",
+    );
+    f.step = Some(fpt::StepAttachment {
+        content_hash: hash.into(),
+        filename: "R_0805.step".into(),
+        offset_xyz: [0.0, 0.0, 0.0],
+        rotation_xyz: [0.0, 0.0, 90.0],
+    });
+    let file = FootprintFile {
+        file_uuid: "01940000-0000-7000-8000-000000000032".into(),
+        display_name: "R_0805".into(),
+        created: CREATED.into(),
+        updated: UPDATED.into(),
+        footprint: f,
+        models: vec![fpt::Model {
+            hash: hash.into(),
+            filename: "R_0805.step".into(),
+            bytes: step.clone().into(),
+        }],
+    };
+    let got = write_footprint_file(&file);
+    assert!(got.starts_with("format = \"snxfpt/1.4\"\n"));
+    // The attachment block is the fixture's, byte for byte.
+    let block = |t: &str| {
+        let a = t.find("[footprints.step_attachment]").expect("attachment");
+        t[a..t.find("[footprints.pcb_params]").expect("params")].to_string()
+    };
+    assert_eq!(block(&got), block(&want));
+    // The model entry is last, valid TOML, and inflates to the same bytes.
+    let value: toml::Value = toml::from_str(&got).expect("valid TOML");
+    let m = &value["models"][0];
+    assert_eq!(m["hash"].as_str(), Some(hash));
+    assert_eq!(m["size"].as_integer(), Some(step.len() as i64));
+    assert_eq!(m["encoding"].as_str(), Some("deflate+base64"));
+    let data: String = m["data"]
+        .as_str()
+        .expect("data")
+        .split_whitespace()
+        .collect();
+    let packed = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .expect("base64");
+    let mut raw = Vec::new();
+    flate2::read::DeflateDecoder::new(&packed[..])
+        .read_to_end(&mut raw)
+        .expect("inflates");
+    assert_eq!(raw, step);
+    let body = got.split("data = '''\n").nth(1).expect("data block");
+    assert!(body.lines().all(|l| l.len() <= 76 || l == "'''"));
+    assert!(got.ends_with("'''\n"));
+    // Without a model the file keeps the older token.
+    let plain = FootprintFile {
+        models: vec![],
+        ..file
+    };
+    assert!(write_footprint_file(&plain).starts_with("format = \"snxfpt/1.1\"\n"));
 }

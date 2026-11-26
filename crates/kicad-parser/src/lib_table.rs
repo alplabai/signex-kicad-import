@@ -447,4 +447,6 @@ mod tests {
             resolve_entry(&t.entries[2], &proj, &[], &none, &[])
                 .expect_err("missing")
                 .contains("old.lib")
-      
+        );
+    }
+}

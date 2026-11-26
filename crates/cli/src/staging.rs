@@ -22,6 +22,13 @@ pub struct Staging {
 
 impl Staging {
     pub fn new(out: &Path) -> Result<Self> {
+        Self::new_as(out, current_uid())
+    }
+
+    /// `new`, with the user id the leftover folder must belong to (a test
+    /// passes another one). A leftover staging folder that is not provably
+    /// ours is neither restored nor removed: the error says to inspect it.
+    pub fn new_as(out: &Path, uid: Option<u32>) -> Result<Self> {
         let name = out
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -30,7 +37,12 @@ impl Staging {
             if !meta.is_dir() {
                 anyhow::bail!("{} is not a plain folder; remove it", dir.display());
             }
-            ensure_ours(&dir, &meta)?;
+            if !owned_by(&meta, uid) {
+                anyhow::bail!(
+                    "{} was left by another user or its owner cannot be verified on this system; inspect it and remove it by hand",
+                    dir.display()
+                );
+            }
             // A run that died while committing left what it had moved aside
             // in `.backup`: put it back before clearing the folder.
             restore_backup(&dir.join(".backup"), out)?;
@@ -93,6 +105,9 @@ impl Staging {
                 anyhow::bail!("refusing the path {}", rel.display());
             }
             let target = self.out.join(rel);
+            if !no_links_below(&self.out, rel) {
+                anyhow::bail!("{} lies behind a link; not moved", target.display());
+            }
             // Only a regular file is moved; a link, a folder or nothing is left alone.
             match std::fs::symlink_metadata(&target) {
                 Ok(m) if m.is_file() => {}
@@ -127,6 +142,9 @@ impl Staging {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
+            if !no_links_below(&self.out, rel) {
+                anyhow::bail!("{} lies behind a link; not written", target.display());
+            }
             std::fs::rename(self.dir.join(rel), &target)
                 .with_context(|| format!("placing {}", target.display()))?;
             placed.push(target);
@@ -145,20 +163,55 @@ fn plain_relative(rel: &Path) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
-/// Refuse a staging folder that belongs to someone else (unix).
+/// The user id this process runs as, found without a system call crate: a
+/// file just created is owned by it. `None` when it cannot be told, which the
+/// callers treat as "not ours".
 #[cfg(unix)]
-fn ensure_ours(dir: &Path, meta: &std::fs::Metadata) -> Result<()> {
+pub fn current_uid() -> Option<u32> {
     use std::os::unix::fs::MetadataExt;
-    let me = std::fs::metadata("/proc/self").map(|m| m.uid()).ok();
-    if me.is_some_and(|me| me != meta.uid()) {
-        anyhow::bail!("{} is owned by another user; remove it", dir.display());
-    }
-    Ok(())
+    let marker = std::env::temp_dir().join(format!(".snx-uid-{}", std::process::id()));
+    let uid = std::fs::File::create(&marker)
+        .and_then(|f| f.metadata())
+        .map(|m| m.uid())
+        .ok();
+    let _ = std::fs::remove_file(&marker);
+    uid
 }
 
 #[cfg(not(unix))]
-fn ensure_ours(_dir: &Path, _meta: &std::fs::Metadata) -> Result<()> {
-    Ok(())
+pub fn current_uid() -> Option<u32> {
+    None
+}
+
+/// Whether `meta` is a folder of the user `uid`. Fails closed: without a
+/// known user, or off unix, nothing is "ours".
+#[cfg(unix)]
+fn owned_by(meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    uid.is_some_and(|u| u == meta.uid())
+}
+
+#[cfg(not(unix))]
+fn owned_by(_meta: &std::fs::Metadata, _uid: Option<u32>) -> bool {
+    false
+}
+
+/// No component of `rel` below `out` is a link: checked just before a move.
+/// The check and the move are not atomic; closing that needs `*at` calls
+/// (cap-std), and a race needs an attacker who can already write into the
+/// output folder.
+fn no_links_below(out: &Path, rel: &Path) -> bool {
+    let mut cur = out.to_path_buf();
+    let comps: Vec<_> = rel.components().collect();
+    for (i, c) in comps.iter().enumerate() {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return false,
+            Ok(m) if i + 1 < comps.len() && !m.is_dir() => return false,
+            _ => {}
+        }
+    }
+    true
 }
 
 /// Move back the files a crashed commit moved aside: only those its own
@@ -180,6 +233,9 @@ fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
         let target = out.join(rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        if !no_links_below(out, rel) {
+            continue;
         }
         std::fs::rename(&from, &target)
             .with_context(|| format!("restoring {}", target.display()))?;
@@ -326,4 +382,50 @@ mod tests {
         std::os::unix::fs::symlink(base.join("elsewhere"), base.join(".lib.tmp-import"))
             .expect("link");
         assert!(Staging::new(&out).is_err());
-        assert!(base.join("elsewh
+        assert!(base.join("elsewhere").is_dir());
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_folder_of_another_user_is_not_restored_or_removed() {
+        let base = tmp("foreign");
+        let out = base.join("lib");
+        std::fs::create_dir_all(out.join("symbols")).expect("out");
+        let backup = base.join(".lib.tmp-import/.backup/symbols");
+        std::fs::create_dir_all(&backup).expect("backup");
+        std::fs::write(backup.join("a.snxsym"), "x").expect("f");
+        std::fs::write(
+            base.join(".lib.tmp-import/.backup/MANIFEST"),
+            "symbols/a.snxsym\n",
+        )
+        .expect("m");
+        // The owner check is injected: pretend we are a different user, then an unknown one.
+        for uid in [Some(current_uid().expect("uid").wrapping_add(1)), None] {
+            let err = Staging::new_as(&out, uid).err().expect("refused");
+            assert!(err.to_string().contains("inspect"), "{err}");
+            assert!(backup.join("a.snxsym").is_file(), "left in place");
+            assert!(!out.join("symbols/a.snxsym").exists());
+        }
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_move_behind_a_linked_folder_is_refused() {
+        let base = tmp("behindlink");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::create_dir_all(base.join("elsewhere")).expect("d");
+        std::fs::write(base.join("elsewhere/a.snxsym"), "victim").expect("f");
+        std::os::unix::fs::symlink(base.join("elsewhere"), out.join("symbols")).expect("link");
+        let mut stage = Staging::new(&out).expect("stage");
+        stage.write("symbols/a.snxsym", b"new").expect("write");
+        assert!(stage.commit(&[PathBuf::from("symbols/a.snxsym")]).is_err());
+        assert_eq!(
+            std::fs::read(base.join("elsewhere/a.snxsym")).expect("f"),
+            b"victim"
+        );
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+}

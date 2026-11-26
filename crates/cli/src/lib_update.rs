@@ -30,7 +30,6 @@ use snx_writer::{write_footprint_file, write_symbol_file};
 struct OldEntry {
     table: String,
     row_id: String,
-    internal_pn: String,
     class: String,
     old: OldRow,
 }
@@ -51,7 +50,16 @@ pub struct Previous {
     pub ignored: Vec<String>,
     /// An untrusted entry was found: this run deletes nothing.
     tainted: bool,
+    /// What the earlier run wrote itself, from its report (validated):
+    /// row ids with their source library, symbol ids, footprint ids. Only
+    /// these are ever deleted; every other row, symbol and file is the
+    /// user's and stays.
+    ledger_rows: HashMap<String, String>,
+    ledger_symbols: HashSet<String>,
+    ledger_footprints: HashSet<String>,
     rows: Vec<OldEntry>,
+    /// Tables whose columns are not ours, verbatim: (name, tsv text).
+    foreign_tables: Vec<(String, String)>,
     classes: Vec<(String, String)>,
 }
 
@@ -75,7 +83,112 @@ fn text<'a>(t: &'a toml::Table, key: &str) -> &'a str {
     t.get(key).and_then(toml::Value::as_str).unwrap_or("")
 }
 
+/// A library or file name that is safe in a ledger: not empty, no separator,
+/// no `:` (a drive or stream on Windows), no control character.
+fn plain_name(s: &str) -> bool {
+    !s.is_empty() && !s.contains(['/', '\\', ':']) && !s.chars().any(char::is_control)
+}
+
+fn is_uuid(s: &str) -> bool {
+    uuid::Uuid::parse_str(s).is_ok()
+}
+
 impl Previous {
+    /// The ledger of the earlier report, as untrusted as the file list: an id
+    /// that is not a uuid or a library name that is not plain taints the run.
+    fn read_ledger(&mut self, ledger: &serde_json::Value) {
+        let strings = |key: &str| -> Vec<String> {
+            ledger[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+        for id in strings("symbols") {
+            if is_uuid(&id) {
+                self.ledger_symbols.insert(id);
+            } else {
+                self.ignored.push(id);
+                self.tainted = true;
+            }
+        }
+        for id in strings("footprints") {
+            if is_uuid(&id) {
+                self.ledger_footprints.insert(id);
+            } else {
+                self.ignored.push(id);
+                self.tainted = true;
+            }
+        }
+        for row in ledger["rows"].as_array().into_iter().flatten() {
+            match (row["id"].as_str(), row["library"].as_str()) {
+                (Some(id), Some(lib)) if is_uuid(id) && plain_name(lib) => {
+                    self.ledger_rows.insert(id.to_string(), lib.to_string());
+                }
+                _ => {
+                    self.ignored.push(row.to_string());
+                    self.tainted = true;
+                }
+            }
+        }
+    }
+
+    /// Whether the envelope at `rel` holds a symbol the converter did not write.
+    pub fn has_user_symbols(&self, rel: &str) -> bool {
+        self.envelopes.get(rel).is_some_and(|e| {
+            e.get("symbols")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|s| {
+                    s.as_table()
+                        .is_some_and(|t| !self.ledger_symbols.contains(text(t, "uuid")))
+                })
+        })
+    }
+
+    /// Ids written earlier that stay because their file stays.
+    pub fn retained_ids(&self, kept_files: &[String]) -> (Vec<String>, Vec<String>) {
+        let (mut syms, mut fps) = (Vec::new(), Vec::new());
+        for f in kept_files {
+            let Some(e) = self.envelopes.get(f) else {
+                continue;
+            };
+            for s in e
+                .get("symbols")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_table)
+            {
+                if self.ledger_symbols.contains(text(s, "uuid")) {
+                    syms.push(text(s, "uuid").to_string());
+                }
+            }
+            for s in e
+                .get("footprints")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_table)
+            {
+                if self.ledger_footprints.contains(text(s, "uuid")) {
+                    fps.push(text(s, "uuid").to_string());
+                }
+            }
+        }
+        (syms, fps)
+    }
+
+    /// The earlier row ids that remain the converter's after this run: kept
+    /// rows of libraries that failed to read.
+    pub fn retained_rows(&self, kept: &HashSet<String>) -> Vec<(String, String)> {
+        kept.iter()
+            .filter_map(|id| self.ledger_rows.get(id).map(|l| (id.clone(), l.clone())))
+            .collect()
+    }
+
     pub fn load(out: &Path) -> Previous {
         let mut p = Previous::default();
         let mut claimed: Vec<String> = Vec::new();
@@ -90,10 +203,17 @@ impl Previous {
                     .filter_map(|f| f.as_str().map(str::to_string))
                     .collect();
                 for (f, l) in v["file_libraries"].as_object().into_iter().flatten() {
-                    if let Some(l) = l.as_str() {
-                        p.file_libs.insert(f.clone(), l.to_string());
+                    match l.as_str() {
+                        Some(l) if plain_name(l) => {
+                            p.file_libs.insert(f.clone(), l.to_string());
+                        }
+                        _ => {
+                            p.ignored.push(f.clone());
+                            p.tainted = true;
+                        }
                     }
                 }
+                p.read_ledger(&v["ledger"]);
             } else {
                 p.ignored
                     .push("import-report.json is not from this converter".to_string());
@@ -174,7 +294,7 @@ impl Previous {
                 _ => None,
             })
             .collect();
-        if parts.len() != rel.components().count() || f.contains('\\') {
+        if parts.len() != rel.components().count() || f.contains(['\\', ':']) {
             return false;
         }
         let name = |i: usize| parts.get(i).and_then(|n| n.to_str()).unwrap_or("");
@@ -223,7 +343,9 @@ impl Previous {
                         .and_then(toml::Value::as_array)
                         .and_then(|a| a.first())
                         .and_then(toml::Value::as_table)
-                        .is_some_and(|t| text(t, "uuid") == stem)
+                        .is_some_and(|t| {
+                            text(t, "uuid") == stem && self.ledger_footprints.contains(stem)
+                        })
                 })
             }
         }
@@ -250,6 +372,13 @@ impl Previous {
             let Some(tsv) = table.get("tsv").and_then(toml::Value::as_str) else {
                 continue;
             };
+            let header = tsv.lines().next().unwrap_or("");
+            if !header.starts_with("row_id\tinternal_pn\tclass\tdatasheet\t")
+                || header.split('\t').count() != 22
+            {
+                self.foreign_tables.push((name.clone(), tsv.to_string()));
+                continue;
+            }
             for line in tsv.lines().skip(1) {
                 let c: Vec<&str> = line.split('\t').collect();
                 if c.len() != 22 {
@@ -258,7 +387,6 @@ impl Previous {
                 self.rows.push(OldEntry {
                     table: name.clone(),
                     row_id: c[0].to_string(),
-                    internal_pn: c[1].to_string(),
                     class: c[2].to_string(),
                     old: OldRow {
                         line: line.to_string(),
@@ -405,6 +533,7 @@ impl Previous {
             .files
             .iter()
             .filter(|f| !keep.contains(f))
+            .filter(|f| !self.has_user_symbols(f))
             .filter(|f| match self.file_libs.get(*f) {
                 Some(lib) => clean.contains(lib) || !attempted.contains(lib),
                 None => !f.contains('/'),
@@ -433,29 +562,40 @@ impl Previous {
         self.file_libs.get(file)
     }
 
-    /// Rows of libraries that were not read cleanly this run are kept as they
-    /// were, in their tables; their classes stay declared.
+    /// Old rows that stay, byte for byte, in their tables. Every row that is
+    /// not the converter's own (not in the ledger) is the user's and stays.
+    /// A row the converter wrote and did not write again is deleted when its
+    /// library read cleanly this run or is no longer an input, and kept when
+    /// the library is an input that failed to read. Returns the ids of the
+    /// converter's own rows that stay.
     pub fn carry_over(
         &self,
+        generated: &HashSet<String>,
         clean: &HashSet<String>,
         attempted: &HashSet<String>,
         tables: &mut Vec<Table>,
         classes: &mut Vec<Class>,
         items: &mut Vec<Item>,
-    ) {
-        let mut kept_libs: Vec<&str> = Vec::new();
+    ) -> HashSet<String> {
+        let mut kept_libs: Vec<String> = Vec::new();
+        let mut removed_libs: Vec<String> = Vec::new();
+        let mut retained: HashSet<String> = HashSet::new();
         for r in &self.rows {
-            let lib = r.internal_pn.split(':').next().unwrap_or("");
-            if clean.contains(lib) {
+            if generated.contains(&r.row_id) {
                 continue;
             }
-            // A library that is no longer an input is removed with its rows
-            // (an update is a snapshot), unless the report could not be trusted.
-            if !attempted.contains(lib) && !self.tainted {
-                continue;
-            }
-            if !kept_libs.contains(&lib) {
-                kept_libs.push(lib);
+            if let Some(lib) = self.ledger_rows.get(&r.row_id) {
+                let drop_it = !self.tainted && (clean.contains(lib) || !attempted.contains(lib));
+                if drop_it {
+                    if !attempted.contains(lib) && !removed_libs.contains(lib) {
+                        removed_libs.push(lib.clone());
+                    }
+                    continue;
+                }
+                retained.insert(r.row_id.clone());
+                if attempted.contains(lib) && !kept_libs.contains(lib) {
+                    kept_libs.push(lib.clone());
+                }
             }
             let idx = match tables.iter().position(|t| t.name == r.table) {
                 Some(i) => i,
@@ -470,34 +610,36 @@ impl Previous {
             tables[idx]
                 .kept
                 .push((r.row_id.clone(), r.old.line.clone()));
-            if !r.class.is_empty() && !classes.iter().any(|c| c.key == r.class) {
-                let label = self
-                    .classes
-                    .iter()
-                    .find(|(k, _)| *k == r.class)
-                    .map_or(r.class.clone(), |(_, l)| l.clone());
-                classes.push(Class {
-                    key: r.class.clone(),
-                    label,
+            self.declare_class(&r.class, classes);
+        }
+        for (name, tsv) in &self.foreign_tables {
+            if !tables.iter().any(|t| &t.name == name) {
+                tables.push(Table {
+                    name: name.clone(),
+                    raw_tsv: Some(tsv.clone()),
+                    ..Table::default()
                 });
             }
         }
-        let mut removed: Vec<&str> = self
-            .rows
-            .iter()
-            .map(|r| r.internal_pn.split(':').next().unwrap_or(""))
-            .chain(self.file_libs.values().map(String::as_str))
-            .filter(|l| !attempted.contains(*l))
-            .collect();
-        removed.sort_unstable();
-        removed.dedup();
-        for lib in removed.into_iter().filter(|_| !self.tainted) {
+        // Classes the user declared stay declared.
+        for (key, _) in &self.classes {
+            self.declare_class(key, classes);
+        }
+        removed_libs.extend(
+            self.file_libs
+                .values()
+                .filter(|l| !attempted.contains(*l))
+                .cloned(),
+        );
+        removed_libs.sort_unstable();
+        removed_libs.dedup();
+        for lib in removed_libs.into_iter().filter(|_| !self.tainted) {
             items.push(Item::new(
                 ItemKind::Library,
-                lib,
+                &lib,
                 "update.library_removed",
                 Severity::Info,
-                format!("{lib} is no longer an input; its earlier files and part rows are removed"),
+                format!("{lib} is no longer an input; the files and part rows this converter wrote for it are removed"),
             ));
         }
         for item in &self.ignored {
@@ -512,7 +654,7 @@ impl Previous {
         for lib in kept_libs {
             items.push(Item::new(
                 ItemKind::Library,
-                lib,
+                &lib,
                 "update.library_kept",
                 Severity::Info,
                 format!(
@@ -520,6 +662,22 @@ impl Previous {
                 ),
             ));
         }
+        retained
+    }
+
+    fn declare_class(&self, key: &str, classes: &mut Vec<Class>) {
+        if key.is_empty() || classes.iter().any(|c| c.key == key) {
+            return;
+        }
+        let label = self
+            .classes
+            .iter()
+            .find(|(k, _)| k == key)
+            .map_or_else(|| key.to_string(), |(_, l)| l.clone());
+        classes.push(Class {
+            key: key.to_string(),
+            label,
+        });
     }
 }
 
@@ -642,4 +800,91 @@ mod tests {
         let good = write("signex-kicad-import");
         assert_eq!(good.files, ["symbols/a.snxsym"]);
         assert!(!good.tainted);
-      
+        // A file whose content is not what its name says is not trusted either.
+        std::fs::write(out.join("symbols/a.snxsym"), "not = \"an envelope\"\n").expect("f");
+        assert!(write("signex-kicad-import").tainted);
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[test]
+    fn a_renamed_envelope_keeps_its_times_and_a_changed_symbol_is_bumped() {
+        use snx_writer::symbol_file::Symbol;
+        let symbol = |uuid: &str, comment: &str| Symbol {
+            uuid: uuid.into(),
+            name: "S".into(),
+            anchor: [0.0, 0.0],
+            pins: vec![],
+            designator: "U?".into(),
+            comment: comment.into(),
+            designator_pos: None,
+            comment_pos: None,
+            description: String::new(),
+            component_type: "Standard".into(),
+            mirrored: false,
+            local_fill_color: None,
+            local_line_color: None,
+            local_pin_color: None,
+            version: "1.0.0".into(),
+            released: false,
+            part_count: 1,
+            created: "1970-01-01T00:00:00Z".into(),
+            updated: "1970-01-01T00:00:00Z".into(),
+            graphics: vec![],
+            params: vec![],
+        };
+        let file = |comment: &str| SymbolFile {
+            file_uuid: "file-1".into(),
+            display_name: "L".into(),
+            created: "1970-01-01T00:00:00Z".into(),
+            updated: "1970-01-01T00:00:00Z".into(),
+            symbols: vec![symbol("11111111-1111-4111-8111-111111111111", comment)],
+        };
+        // The earlier run wrote the envelope at symbols/old-name.snxsym with real times.
+        let base = scratch("renamed");
+        std::fs::create_dir_all(base.join("symbols")).expect("d");
+        let mut first = file("*");
+        first.created = "2020-01-01T00:00:00Z".into();
+        first.updated = "2020-02-02T00:00:00Z".into();
+        first.symbols[0].created.clone_from(&first.created);
+        first.symbols[0].updated.clone_from(&first.updated);
+        std::fs::write(
+            base.join("symbols/old-name.snxsym"),
+            write_symbol_file(&first),
+        )
+        .expect("f");
+        let prev = Previous::load(&base);
+        // Unchanged content under a new file name: times and version stay.
+        let mut same = file("*");
+        prev.apply_symbols("symbols/new-name.snxsym", &mut same, "2026-11-26T10:00:00Z");
+        assert_eq!(
+            (same.created.as_str(), same.updated.as_str()),
+            ("2020-01-01T00:00:00Z", "2020-02-02T00:00:00Z")
+        );
+        assert_eq!(
+            (
+                same.symbols[0].version.as_str(),
+                same.symbols[0].updated.as_str()
+            ),
+            ("1.0.0", "2020-02-02T00:00:00Z")
+        );
+        // Changed content: created kept, updated now, version bumped.
+        let mut changed = file("different");
+        prev.apply_symbols(
+            "symbols/new-name.snxsym",
+            &mut changed,
+            "2026-11-26T10:00:00Z",
+        );
+        assert_eq!(
+            (changed.created.as_str(), changed.updated.as_str()),
+            ("2020-01-01T00:00:00Z", "2026-11-26T10:00:00Z")
+        );
+        assert_eq!(
+            (
+                changed.symbols[0].version.as_str(),
+                changed.symbols[0].created.as_str()
+            ),
+            ("1.0.1", "2020-01-01T00:00:00Z")
+        );
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+}

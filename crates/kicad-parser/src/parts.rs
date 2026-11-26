@@ -68,6 +68,8 @@ pub struct Parts {
     /// Symbols that could have a row (not power symbols).
     pub candidates: usize,
     pub rows: usize,
+    /// Every row built this run (written or kept byte for byte): row id and source library.
+    pub generated: Vec<(String, String)>,
 }
 
 /// A row of the library an earlier run wrote, as an update needs it.
@@ -288,6 +290,7 @@ pub fn build_parts(
                     let same = snx_writer::part_table::content_hash(&row) == old.content_hash
                         && row.symbol_version == old.symbol_version
                         && row.footprint_version == old.footprint_version;
+                    out.generated.push((row.row_id.clone(), library.clone()));
                     if same {
                         kept.push((row.row_id.clone(), old.line.clone()));
                         continue;
@@ -302,12 +305,20 @@ pub fn build_parts(
                 }
                 None => {}
             }
+            if !update.old_rows.contains_key(&row.row_id) {
+                out.generated.push((row.row_id.clone(), library.clone()));
+            }
             rows.push(row);
         }
         if !rows.is_empty() || !kept.is_empty() {
             out.rows += rows.len() + kept.len();
             let name = table_name(library, &mut used_tables, &mut out.items);
-            out.tables.push(Table { name, rows, kept });
+            out.tables.push(Table {
+                name,
+                rows,
+                kept,
+                raw_tsv: None,
+            });
         }
     }
     out.classes = CLASSES

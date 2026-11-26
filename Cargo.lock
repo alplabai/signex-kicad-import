@@ -498,6 +498,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snx-writer",
+ "toml",
  "uuid",
 ]
 
@@ -512,6 +513,7 @@ name = "snx-writer"
 version = "0.2.0"
 dependencies = [
  "serde_json",
+ "sha2",
  "toml",
  "uuid",
 ]

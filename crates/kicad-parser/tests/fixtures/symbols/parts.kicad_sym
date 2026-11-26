@@ -1,0 +1,49 @@
+(kicad_symbol_lib (version 20231120) (generator "handwritten")
+  (symbol "R_Part"
+    (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Fps:R_Test_0603" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Datasheet" "https://example.com/r.pdf" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Description" "Resistor, test" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "ki_keywords" "R res resistor" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "ki_fp_filters" "R_*" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Tolerance" "1%" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "MPN" "RC0603FR-0710KL" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Manufacturer" "Yageo" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "value" "clash" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (symbol "R_Part_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))
+      (pin passive line (at 0 -3.81 90) (length 1.27) (name "~") (number "2"))))
+  (symbol "R_Derived" (extends "R_Part")
+    (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "22k" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Fps:R_Test_0603" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes))))
+  (symbol "C_NoFp"
+    (property "Reference" "C" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "100n" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Datasheet" "~" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "ki_fp_filters" "C_* Capacitor*" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (symbol "C_NoFp_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))))
+  (symbol "D_Missing"
+    (property "Reference" "D" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "D" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Fps:Nope" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (symbol "D_Missing_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "A") (number "1"))))
+  (symbol "GND_Pwr" (power)
+    (property "Reference" "#PWR" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Value" "GND" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "GND_Pwr_1_1"
+      (pin power_in line (at 0 0 270) (length 0) (name "GND") (number "1"))))
+  (symbol "LED_Part"
+    (property "Reference" "LED" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "LED" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "LED_Part_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "A") (number "1"))))
+  (symbol "Odd_Part"
+    (property "Reference" "ZZ" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "Odd_Part_1_1"
+      (pin passive line (at 0 3.81 270) (length 1.27) (name "A") (number "1")))))

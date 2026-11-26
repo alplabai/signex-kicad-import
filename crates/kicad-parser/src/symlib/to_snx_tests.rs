@@ -170,12 +170,11 @@ fn power_and_bom_flags_are_reported_where_signex_has_no_field() {
 }
 
 #[test]
-fn derived_symbols_take_the_drawing_of_their_parent_and_broken_ones_are_skipped() {
+fn derived_symbols_are_part_rows_not_symbols() {
     let (file, _) = map("extends.kicad_sym");
     let names: Vec<&str> = file.symbols.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Base_Part", "Derived_Part", "Grandchild_Part"]);
-    assert_eq!(file.symbols[1].pins.len(), 1);
-    assert_eq!(file.symbols[2].pins.len(), 1);
+    assert_eq!(names, ["Base_Part"]);
+    assert_eq!(file.symbols[0].pins.len(), 1);
 }
 
 #[test]

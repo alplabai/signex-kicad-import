@@ -10,15 +10,13 @@ KiCad file-format documentation. No Signex or KiCad source was read.
 
 ```text
 <output>/
-  <Name>.snxlib                 manifest only (section 2.1), no part tables yet
+  <Name>.snxlib                 manifest, classes and one part table per source symbol library
   symbols/<slug>.snxsym         one envelope per source symbol library
   footprints/<uuid>.snxfpt      one footprint per file, named by its uuid
   import-report.json / .md
 ```
 
-Part rows (the `[tables.*]` of the `.snxlib`) and 3D models are later work; a
-library written now has symbols and footprints but no parts. Written files are
-staged beside `--output` and moved in only when the run succeeds.
+3D models are later work. Written files are staged beside `--output` and moved in only when the run succeeds.
 
 Ids are UUIDv5, never random (`kicad_parser::libids`): the library id from the
 display name and the input **file names** (not paths); a symbol, footprint or
@@ -52,11 +50,53 @@ footprint frame differs, below.)
 | Reference, Value positions | `designator_pos`, `comment_pos`; designator = Reference + `?` |
 | `in_bom no` | `component_type` `StandardNoBom` |
 | `power`, `on_board no`, `exclude_from_sim yes` | no field: approximated items |
-| Datasheet, Footprint, keywords, filters, other properties | part-row data (later); not in the symbol file |
+| `extends` (a derived symbol) | no symbol of its own: a part row on the parent's symbol (below) |
+| Datasheet, Footprint, keywords, filters, other properties | part-row data (below); not in the symbol file |
 
 The token is the lowest the file needs (3.5). Text in pin cells may hold no
 control character or `'''` (open point 3 of the format): they become spaces
 (`symbol.text_sanitized`).
+
+## Part rows (`.snxlib`)
+
+One table per source symbol library, named after the library (a character a
+table name cannot hold, `/ \ . : * ? " < > |`, becomes `_`; a clash gets
+`~2`; `part.table_name_changed`). Rows follow section 2 of the format: the 22
+columns, rows sorted by `row_id`, compact JSON cells, `content_hash` of
+section 6 (`snx_writer::part_table`, checked byte for byte against the
+conformance tables and hash documents). A library with no rows has no table.
+
+| Row field | From |
+|---|---|
+| `row_id` | UUIDv5 of the library id, `part`, library name, symbol name |
+| `internal_pn` | `<library>:<symbol>` |
+| `class` | the leading letters of Reference: R resistor, C capacitor, L inductor, D diode, LED led, Q transistor, U / IC ic, J / P / CN connector, SW / S switch, Y / X crystal, H / MH mechanical, FID fiducial, else generic. Only the classes used are declared in the manifest's `[[classes]]` (key and label, in the order of this list) |
+| `symbol_ref` | the symbol (for a derived symbol, the nearest ancestor that draws) |
+| `footprint_ref` | the `Footprint` property `Lib:Name`: the footprint of that name converted from the library called `Lib` (a table's nickname, or a `.pretty`'s name). A named footprint that was not converted skips the row (`part.footprint_missing`, error). An empty property: no footprint |
+| `datasheet` | `Datasheet` as a url; `~` or empty is none |
+| `description` | `Description` (or `ki_description`) |
+| `primary_mpn` | `Manufacturer` / `MPN` (or `MFR`, `Manufacturer_Name`, `Manufacturer_Part_Number`, `MFG_PN`); empty text when the symbol has none |
+| `parameters` (text) | `designator_prefix`, `value` (Value), `keywords` (`ki_keywords`), `footprint_filters` (`ki_fp_filters`, only when there is no footprint), every other non-empty property under its own name (`<name>_property` for a name that clashes with one of these) |
+| state, version, released | `Released`, `1.0.0`, `true`; symbol and footprint versions `1.0.0` |
+| `created`, `updated` | the epoch (no clock) |
+
+A power symbol (its own `power` flag or its ancestor's) gets a symbol and no
+row. Rows have no alternates, supply, simulation model or pin map.
+
+## Library tables
+
+`sym-lib-table` and `fp-lib-table` (inputs by their file names) list libraries by
+nickname, type, uri, options and description. Each `KiCad` entry is converted
+under its nickname, which is what `Lib:Name` footprint properties name. The uri
+may use `${VAR}` variables: `${KIPRJMOD}` is the table's folder, others come
+from the environment; an unset variable or a missing path falls back to the rest
+of the path, then the file name, below each `--search-path` folder. Entries
+that cannot be used are error items and never stop the others: an unresolved uri
+(`library.table_entry_unresolved`), a type other than `KiCad`
+(`library.table_type_unsupported`), an unreadable table
+(`library.table_unreadable`). A `(disabled)` entry is skipped
+(`library.table_entry_disabled`, info). Each resolved library is also listed in
+the report's `sources`.
 
 ## Footprints (`.snxfpt`)
 
@@ -109,7 +149,11 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 | `footprint.zone_dropped`, `footprint.graphic_layer_dropped`, `footprint.graphic_unreadable`, `pad.layer_dropped` | dropped | |
 | `pad.paste_ratio_not_carried`, `pad.property_not_carried`, `pad.slot_orientation_approximated`, `footprint.courtyard_approximated`, `footprint.tags_in_description`, `footprint.attr_not_carried`, `footprint.text_rotation_dropped`, `pad.npth_copper_dropped`, `pad.text_sanitized` | approximated | |
 | `model.deferred` | info | 3D model not converted yet |
-| `library.table_not_read` | error | `sym-lib-table` / `fp-lib-table` inputs are not read yet |
+| `part.written` | info | the row was written; `id` is its `row_id` |
+| `part.footprint_missing` | error | the named footprint was not converted; row skipped |
+| `part.table_name_changed`, `part.text_sanitized` | approximated | |
+| `library.table_entry_unresolved`, `library.table_type_unsupported`, `library.table_unreadable` | error | see Library tables |
+| `library.table_entry_disabled` | info | |
 
 ## Open points
 
@@ -117,4 +161,5 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 2. `--update` replaces changed files and deletes the symbol and footprint files (and an old manifest) of items that left the source, restoring everything if a step fails. It does not yet bump part versions or keep part `created` times (part rows are regenerated from the source).
 3. Whether a library with no part tables loads in Signex is not stated.
 4. Envelope times are the epoch (see above); `updated` is not set on `--update`.
-5. Library tables are not read; `--models` / `--models-dir` are accepted and have no effect until models are converted.
+5. `--models` / `--models-dir` are accepted and have no effect until models are converted.
+6. Part rows carry no manufacturer data unless the symbol has `Manufacturer` / `MPN`; the primary part's `mpn` and `manufacturer` are then empty text, which the format allows only as far as it says nothing against it.

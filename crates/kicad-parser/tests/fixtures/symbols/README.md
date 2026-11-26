@@ -11,3 +11,4 @@ The format follows the public documentation listed in
 - `power.kicad_sym`: a power symbol, flags `in_bom` / `on_board` / `exclude_from_sim`.
 - `unknown.kicad_sym`: tokens the reader does not know and elements it cannot read.
 - `Parts.kicad_symdir/`: the per-symbol form; one symbol per file, a derived symbol in a file apart from its parent, a file that is not a symbol, and a truncated file.
+- `parts.kicad_sym`: the symbols the part rows are built from: a resistor with every property kind, a derived symbol, a part with no footprint but filters, one whose footprint does not exist, a power symbol, a LED, an unknown prefix.

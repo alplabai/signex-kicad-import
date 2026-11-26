@@ -1,0 +1,487 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 alplab and contributors. See LICENSE.
+
+//! Part tables and classes of the `.snxlib` (`LIBRARY_FORMAT.md` sections
+//! 2.2 to 2.4 and 6): the row model, the tab-separated block, the compact
+//! JSON cells and the `content_hash` of a row.
+
+use std::fmt::Write as _;
+
+use serde_json::to_string as json_string;
+use sha2::{Digest, Sha256};
+
+use crate::canon::{toml_key, toml_string};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Class {
+    pub key: String,
+    pub label: String,
+}
+
+/// A reference to a primitive of a library.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ref {
+    pub library_id: String,
+    pub uuid: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Document {
+    Url(String),
+    HashPinned { hash: String, filename: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelledDocument {
+    pub label: String,
+    pub document: Document,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FootprintBinding {
+    pub footprint: Ref,
+    /// Empty for none; omitted from the cell then.
+    pub version: String,
+    pub pin_map_overrides: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mpn {
+    pub manufacturer: String,
+    pub mpn: String,
+    /// `Primary`, `Approved`, `Conditional` or `Disqualified`.
+    pub status: String,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Supply {
+    pub distributor: String,
+    pub sku: String,
+    pub url: Option<String>,
+    pub moq: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Param {
+    Text(String),
+    Number(f64),
+    Bool(bool),
+    Measurement { value: f64, unit: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlternateSymbol {
+    pub symbol: Ref,
+    pub symbol_version: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartRow {
+    pub row_id: String,
+    pub internal_pn: String,
+    pub class: String,
+    /// The primary document first; empty for none.
+    pub datasheets: Vec<LabelledDocument>,
+    /// `Draft`, `InReview`, `Released`, `Deprecated` or `Obsolete`.
+    pub state: String,
+    pub symbol: Ref,
+    /// The default footprint, and the alternates after it.
+    pub footprint: Option<Ref>,
+    pub alternate_footprints: Vec<FootprintBinding>,
+    pub sim: Option<Ref>,
+    pub primary_mpn: Mpn,
+    pub alternates: Vec<Mpn>,
+    pub supply: Vec<Supply>,
+    /// Written sorted by key.
+    pub parameters: Vec<(String, Param)>,
+    pub pin_map_overrides: Vec<(String, String)>,
+    pub created: String,
+    pub updated: String,
+    pub version: String,
+    pub released: bool,
+    pub symbol_version: String,
+    pub footprint_version: String,
+    pub sim_version: String,
+    pub description: String,
+    pub alternate_symbols: Vec<AlternateSymbol>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Table {
+    pub name: String,
+    pub rows: Vec<PartRow>,
+}
+
+/// A JSON number as section 5.2 gives it: shortest round trip, integral
+/// values with `.0`, plain decimal from 1e-5 up to below 1e16, else an
+/// exponent with a sign.
+pub fn json_number(v: f64) -> String {
+    if !v.is_finite() {
+        return "0.0".to_string();
+    }
+    let abs = v.abs();
+    if v == 0.0 || (1e-5..1e16).contains(&abs) {
+        let s = format!("{v}");
+        return if s.contains('.') { s } else { format!("{s}.0") };
+    }
+    let s = format!("{v:e}");
+    match s.split_once('e') {
+        Some((m, e)) if !e.starts_with('-') => format!("{m}e+{e}"),
+        _ => s,
+    }
+}
+
+fn q(s: &str) -> String {
+    json_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn ref_json(r: &Ref) -> String {
+    format!(
+        "{{\"library_id\":{},\"uuid\":{}}}",
+        q(&r.library_id),
+        q(&r.uuid)
+    )
+}
+
+fn doc_fields(d: &Document) -> String {
+    match d {
+        Document::Url(u) => format!("\"kind\":\"url\",\"url\":{}", q(u)),
+        Document::HashPinned { hash, filename } => {
+            format!(
+                "\"kind\":\"hash_pinned\",\"hash\":{},\"filename\":{}",
+                q(hash),
+                q(filename)
+            )
+        }
+    }
+}
+
+/// A document in the element form of the array cell: `label` first, omitted
+/// when empty.
+fn doc_element(d: &LabelledDocument) -> String {
+    if d.label.is_empty() {
+        format!("{{{}}}", doc_fields(&d.document))
+    } else {
+        format!("{{\"label\":{},{}}}", q(&d.label), doc_fields(&d.document))
+    }
+}
+
+fn empty_doc() -> String {
+    "{\"kind\":\"url\",\"url\":\"\"}".to_string()
+}
+
+fn datasheet_cell(docs: &[LabelledDocument]) -> String {
+    match docs {
+        [] => empty_doc(),
+        [one] if one.label.is_empty() => format!("{{{}}}", doc_fields(&one.document)),
+        many => format!(
+            "[{}]",
+            many.iter().map(doc_element).collect::<Vec<_>>().join(",")
+        ),
+    }
+}
+
+fn pin_map_json(map: &[(String, String)]) -> String {
+    let items: Vec<String> = map
+        .iter()
+        .map(|(s, f)| {
+            format!(
+                "{{\"symbol_pin_number\":{},\"footprint_pad_number\":{}}}",
+                q(s),
+                q(f)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// A binding as an array element: `version` and `pin_map_overrides` omitted when empty.
+fn binding_json(b: &FootprintBinding) -> String {
+    let mut o = format!("{{\"footprint\":{}", ref_json(&b.footprint));
+    if !b.version.is_empty() {
+        let _ = write!(o, ",\"version\":{}", q(&b.version));
+    }
+    if !b.pin_map_overrides.is_empty() {
+        let _ = write!(
+            o,
+            ",\"pin_map_overrides\":{}",
+            pin_map_json(&b.pin_map_overrides)
+        );
+    }
+    o.push('}');
+    o
+}
+
+fn mpn_json(m: &Mpn) -> String {
+    format!(
+        "{{\"manufacturer\":{},\"mpn\":{},\"status\":{},\"notes\":{}}}",
+        q(&m.manufacturer),
+        q(&m.mpn),
+        q(&m.status),
+        m.notes.as_deref().map_or_else(|| "null".to_string(), q)
+    )
+}
+
+fn supply_json(s: &Supply) -> String {
+    format!(
+        "{{\"distributor\":{},\"sku\":{},\"url\":{},\"moq\":{}}}",
+        q(&s.distributor),
+        q(&s.sku),
+        s.url.as_deref().map_or_else(|| "null".to_string(), q),
+        s.moq.map_or_else(|| "null".to_string(), |m| m.to_string())
+    )
+}
+
+fn param_json(p: &Param) -> String {
+    match p {
+        Param::Text(t) => format!("{{\"kind\":\"Text\",\"value\":{}}}", q(t)),
+        Param::Number(n) => format!("{{\"kind\":\"Number\",\"value\":{}}}", json_number(*n)),
+        Param::Bool(b) => format!("{{\"kind\":\"Bool\",\"value\":{b}}}"),
+        Param::Measurement { value, unit } => format!(
+            "{{\"kind\":\"Measurement\",\"value\":{{\"value\":{},\"unit\":{}}}}}",
+            json_number(*value),
+            q(unit)
+        ),
+    }
+}
+
+fn parameters_json(params: &[(String, Param)]) -> String {
+    let mut sorted: Vec<&(String, Param)> = params.iter().collect();
+    sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let items: Vec<String> = sorted
+        .iter()
+        .map(|(k, p)| format!("{}:{}", q(k), param_json(p)))
+        .collect();
+    format!("{{{}}}", items.join(","))
+}
+
+fn alt_symbols_json(alts: &[AlternateSymbol]) -> String {
+    let items: Vec<String> = alts
+        .iter()
+        .map(|a| {
+            format!(
+                "{{\"symbol_ref\":{},\"symbol_version\":{},\"label\":{}}}",
+                ref_json(&a.symbol),
+                q(&a.symbol_version),
+                q(&a.label)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+fn array<T>(items: &[T], f: impl Fn(&T) -> String) -> String {
+    format!("[{}]", items.iter().map(f).collect::<Vec<_>>().join(","))
+}
+
+fn footprint_cell(row: &PartRow) -> String {
+    match (&row.footprint, row.alternate_footprints.is_empty()) {
+        (None, _) => String::new(),
+        (Some(r), true) => ref_json(r),
+        (Some(r), false) => {
+            let default = FootprintBinding {
+                footprint: r.clone(),
+                version: String::new(),
+                pin_map_overrides: vec![],
+            };
+            let mut items = vec![binding_json(&default)];
+            items.extend(row.alternate_footprints.iter().map(binding_json));
+            format!("[{}]", items.join(","))
+        }
+    }
+}
+
+/// The canonical view the `content_hash` is computed over (section 6).
+pub fn hash_document(row: &PartRow) -> String {
+    let mut o = String::new();
+    let _ = write!(
+        o,
+        "{{\"row_id\":{},\"internal_pn\":{},\"class\":{},\"state\":{}",
+        q(&row.row_id),
+        q(&row.internal_pn),
+        q(&row.class),
+        q(&row.state)
+    );
+    let primary = row.datasheets.first();
+    let _ = write!(
+        o,
+        ",\"datasheet\":{}",
+        primary.map_or_else(empty_doc, |d| format!("{{{}}}", doc_fields(&d.document)))
+    );
+    if let Some(d) = primary.filter(|d| !d.label.is_empty()) {
+        let _ = write!(o, ",\"datasheet_label\":{}", q(&d.label));
+    }
+    if row.datasheets.len() > 1 {
+        let _ = write!(
+            o,
+            ",\"more_datasheets\":{}",
+            array(&row.datasheets[1..], doc_element)
+        );
+    }
+    if !row.description.is_empty() {
+        let _ = write!(o, ",\"description\":{}", q(&row.description));
+    }
+    let _ = write!(o, ",\"symbol_ref\":{}", ref_json(&row.symbol));
+    let _ = write!(
+        o,
+        ",\"footprint_ref\":{}",
+        row.footprint
+            .as_ref()
+            .map_or_else(|| "null".to_string(), ref_json)
+    );
+    if !row.alternate_footprints.is_empty() {
+        let _ = write!(
+            o,
+            ",\"alternate_footprints\":{}",
+            array(&row.alternate_footprints, binding_json)
+        );
+    }
+    let _ = write!(
+        o,
+        ",\"sim_ref\":{}",
+        row.sim
+            .as_ref()
+            .map_or_else(|| "null".to_string(), ref_json)
+    );
+    let _ = write!(
+        o,
+        ",\"pin_map_overrides\":{}",
+        pin_map_json(&row.pin_map_overrides)
+    );
+    let _ = write!(o, ",\"primary_mpn\":{}", mpn_json(&row.primary_mpn));
+    let _ = write!(o, ",\"alternates\":{}", array(&row.alternates, mpn_json));
+    if !row.alternate_symbols.is_empty() {
+        let _ = write!(
+            o,
+            ",\"alternate_symbols\":{}",
+            alt_symbols_json(&row.alternate_symbols)
+        );
+    }
+    let _ = write!(o, ",\"supply\":{}", array(&row.supply, supply_json));
+    let _ = write!(o, ",\"parameters\":{}", parameters_json(&row.parameters));
+    o.push_str(",\"plm\":{\"plm_part_id\":null,\"eco_refs\":[],\"compliance\":{}}}");
+    o
+}
+
+/// The row's `content_hash`: lower-case hex SHA-256 of [`hash_document`].
+pub fn content_hash(row: &PartRow) -> String {
+    let digest = Sha256::digest(hash_document(row).as_bytes());
+    digest.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+const COLUMNS: [&str; 22] = [
+    "row_id",
+    "internal_pn",
+    "class",
+    "datasheet",
+    "state",
+    "symbol_ref",
+    "footprint_ref",
+    "sim_ref",
+    "primary_mpn",
+    "alternates",
+    "supply",
+    "parameters",
+    "pin_map_overrides",
+    "created",
+    "updated",
+    "content_hash",
+    "version",
+    "released",
+    "symbol_version",
+    "footprint_version",
+    "sim_version",
+    "description",
+];
+
+fn cells(row: &PartRow, with_alternates: bool) -> Vec<String> {
+    let mut c = vec![
+        row.row_id.clone(),
+        row.internal_pn.clone(),
+        row.class.clone(),
+        datasheet_cell(&row.datasheets),
+        row.state.clone(),
+        ref_json(&row.symbol),
+        footprint_cell(row),
+        row.sim.as_ref().map_or_else(String::new, ref_json),
+        mpn_json(&row.primary_mpn),
+        array(&row.alternates, mpn_json),
+        array(&row.supply, supply_json),
+        parameters_json(&row.parameters),
+        pin_map_json(&row.pin_map_overrides),
+        row.created.clone(),
+        row.updated.clone(),
+        content_hash(row),
+        row.version.clone(),
+        row.released.to_string(),
+        row.symbol_version.clone(),
+        row.footprint_version.clone(),
+        row.sim_version.clone(),
+        row.description.clone(),
+    ];
+    if with_alternates {
+        c.push(if row.alternate_symbols.is_empty() {
+            String::new()
+        } else {
+            alt_symbols_json(&row.alternate_symbols)
+        });
+    }
+    c
+}
+
+/// The `[[classes]]` blocks, in list order.
+pub fn write_classes(classes: &[Class]) -> String {
+    let mut o = String::new();
+    for c in classes {
+        let _ = write!(
+            o,
+            "\n[[classes]]\nkey = {}\nlabel = {}\n",
+            toml_string(&c.key),
+            toml_string(&c.label)
+        );
+    }
+    o
+}
+
+/// One `[tables.<name>]` block, rows sorted by `row_id` in byte order.
+pub fn write_table(table: &Table) -> String {
+    let with_alternates = table.rows.iter().any(|r| !r.alternate_symbols.is_empty());
+    let mut rows: Vec<&PartRow> = table.rows.iter().collect();
+    rows.sort_by(|a, b| a.row_id.as_bytes().cmp(b.row_id.as_bytes()));
+    let mut header = COLUMNS.join("\t");
+    if with_alternates {
+        header.push_str("\talternate_symbols");
+    }
+    let mut o = format!(
+        "\n[tables.{}]\ntsv = '''\n{header}\n",
+        toml_key(&table.name)
+    );
+    for row in rows {
+        o.push_str(&cells(row, with_alternates).join("\t"));
+        o.push('\n');
+    }
+    o.push_str("'''\n");
+    o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_numbers_follow_the_spec_forms() {
+        assert_eq!(json_number(10000.0), "10000.0");
+        assert_eq!(json_number(0.1), "0.1");
+        assert_eq!(json_number(0.00001), "0.00001");
+        assert_eq!(json_number(1e-6), "1e-6");
+        assert_eq!(json_number(1e16), "1e+16");
+        assert_eq!(json_number(1.5e16), "1.5e+16");
+        assert_eq!(json_number(1_000_000_000_000_000.0), "1000000000000000.0");
+    }
+}

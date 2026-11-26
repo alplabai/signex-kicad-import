@@ -34,8 +34,8 @@ For Signex's library converter contract, `signex-kicad-import describe --json`
 and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
 libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
 `library` command converts KiCad symbol libraries and footprints into a Signex
-library directory (`docs/LIBRARY_MAPPING.md`; symbols and footprints, no part
-rows or 3D models yet).
+library directory (`docs/LIBRARY_MAPPING.md`: symbols, footprints and part rows,
+from files, folders or library tables; no 3D models yet).
 
 ## What the board conversion covers
 

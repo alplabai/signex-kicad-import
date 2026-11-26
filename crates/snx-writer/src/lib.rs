@@ -17,6 +17,7 @@ pub mod canon;
 pub mod footprint_file;
 mod manifest;
 pub mod model;
+pub mod part_table;
 mod pcb;
 mod project;
 pub mod symbol_file;

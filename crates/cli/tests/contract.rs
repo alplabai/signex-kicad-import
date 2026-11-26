@@ -345,7 +345,8 @@ fn symbol_inputs_fill_the_source_counts_and_items() {
     assert!(errors.is_empty(), "{errors:#?}");
     // 1 + 2 + 3 symbols in the three inputs, all written.
     assert_eq!(report["counts"]["source"]["symbols"], 6);
-    assert_eq!(report["counts"]["written"]["symbols"], 6);
+    // The derived symbol Beta is a part row on Alpha, not a symbol.
+    assert_eq!(report["counts"]["written"]["symbols"], 5);
     assert_eq!(report["sources"].as_array().expect("sources").len(), 3);
     let codes: Vec<&str> = report["items"]
         .as_array()
@@ -706,6 +707,154 @@ fn an_update_deletes_items_that_left_the_source() {
             .expect("dir")
             .count(),
         1
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+fn fixtures_dir(sub: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../kicad-parser/tests/fixtures")
+        .join(sub)
+}
+
+#[test]
+fn library_tables_convert_every_library_they_list_and_bind_footprints_by_nickname() {
+    let dir = scratch("lib-tables");
+    let fp_dir = fixtures_dir("footprints/Test.pretty");
+    // The part's footprint names the fp table's nickname `Test`.
+    let sym_dir = dir.join("proj");
+    std::fs::create_dir_all(&sym_dir).expect("d");
+    std::fs::write(
+        sym_dir.join("mine.kicad_sym"),
+        TINY.replace(
+            "(property \"Value\" \"R\")",
+            "(property \"Value\" \"R\") (property \"Footprint\" \"Test:R_Test_0603\")",
+        ),
+    )
+    .expect("sym");
+    std::fs::write(
+        sym_dir.join("sym-lib-table"),
+        "(sym_lib_table (version 7)
+  (lib (name \"Mine\")(type \"KiCad\")(uri \"${KIPRJMOD}/mine.kicad_sym\")(options \"\")(descr \"\"))
+  (lib (name \"Shared\")(type \"KiCad\")(uri \"${SNX_TEST_SHARED}/power.kicad_sym\")(options \"\")(descr \"\"))
+  (lib (name \"Gone\")(type \"KiCad\")(uri \"${SNX_TEST_UNSET}/gone.kicad_sym\")(options \"\")(descr \"\"))
+  (lib (name \"Old\")(type \"Legacy\")(uri \"old.lib\")(options \"\")(descr \"\"))
+  (lib (name \"Off\")(type \"KiCad\")(uri \"off.kicad_sym\")(options \"\")(descr \"\")(disabled))
+)",
+    )
+    .expect("table");
+    std::fs::write(
+        sym_dir.join("fp-lib-table"),
+        format!("(fp_lib_table (version 7) (lib (name \"Test\")(type \"KiCad\")(uri \"{}\")(options \"\")(descr \"\")))", fp_dir.display()),
+    )
+    .expect("table");
+    let out_dir = dir.join("out");
+    let out = common::bin()
+        .env("SNX_TEST_SHARED", fixtures_dir("symbols"))
+        .env_remove("SNX_TEST_UNSET")
+        .args([
+            "library",
+            sym_dir.join("sym-lib-table").to_str().expect("utf8"),
+            sym_dir.join("fp-lib-table").to_str().expect("utf8"),
+            "--output",
+            out_dir.to_str().expect("utf8"),
+            "--json",
+        ])
+        .output()
+        .expect("runs");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = report_of(&out_dir);
+    let items = report["items"].as_array().expect("items");
+    let by_code = |code: &str| -> Vec<&str> {
+        items
+            .iter()
+            .filter(|i| i["code"] == code)
+            .filter_map(|i| i["source"].as_str())
+            .collect()
+    };
+    // Unresolvable and unsupported entries are error items; a disabled one is info; none stops the run.
+    assert_eq!(
+        by_code("library.table_entry_unresolved"),
+        ["sym-lib-table:Gone"]
+    );
+    assert_eq!(
+        by_code("library.table_type_unsupported"),
+        ["sym-lib-table:Old"]
+    );
+    assert_eq!(
+        by_code("library.table_entry_disabled"),
+        ["sym-lib-table:Off"]
+    );
+    // Mine (1 symbol) and Shared (a power symbol library) were read, the footprint library too.
+    assert_eq!(report["counts"]["written"]["footprints"], 2);
+    assert!(out_dir.join("symbols/mine.snxsym").is_file());
+    // The part's footprint binds the converted footprint of that nickname.
+    let manifest = std::fs::read_to_string(out_dir.join("proj.snxlib")).expect("manifest");
+    let value: toml::Value = toml::from_str(&manifest).expect("valid TOML");
+    assert_eq!(
+        value["tables"]["Mine"]["tsv"]
+            .as_str()
+            .map(|t| t.lines().count()),
+        Some(2)
+    );
+    let row = value["tables"]["Mine"]["tsv"]
+        .as_str()
+        .expect("tsv")
+        .lines()
+        .nth(1)
+        .expect("row")
+        .to_string();
+    let cells: Vec<&str> = row.split('\t').collect();
+    assert_eq!(cells[1], "Mine:R");
+    let footprint: Value = serde_json::from_str(cells[6]).expect("footprint ref");
+    let uuid = footprint["uuid"].as_str().expect("uuid");
+    assert!(out_dir.join(format!("footprints/{uuid}.snxfpt")).is_file());
+    assert_eq!(value["classes"][0]["key"].as_str(), Some("resistor"));
+    assert_eq!(report["counts"]["written"]["parts"], 1);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn a_part_whose_footprint_was_not_converted_is_skipped_and_reported() {
+    let dir = scratch("lib-part-missing");
+    let sym = dir.join("Tiny.kicad_sym");
+    std::fs::write(
+        &sym,
+        TINY.replace(
+            "(property \"Value\" \"R\")",
+            "(property \"Value\" \"R\") (property \"Footprint\" \"Nowhere:X\")",
+        ),
+    )
+    .expect("sym");
+    let out_dir = dir.join("out");
+    let out = run(&[
+        "library",
+        sym.to_str().expect("utf8"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    let report = report_of(&out_dir);
+    assert_eq!(report["counts"]["written"]["parts"], 0);
+    let missing = report["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|i| i["code"] == "part.footprint_missing")
+        .expect("item");
+    assert_eq!(missing["severity"], "error");
+    assert_eq!(missing["kind"], "part");
+    // No row, so no table.
+    assert!(
+        !std::fs::read_to_string(out_dir.join("Tiny.snxlib"))
+            .expect("manifest")
+            .contains("[tables")
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

@@ -336,6 +336,208 @@ fn the_manifest_head_matches_the_fixture_byte_for_byte() {
         "01940000-0000-7000-8000-000000000001",
         "Conformance",
         Some("Signex library format conformance fixture (docs/LIBRARY_FORMAT.md)."),
+        &[],
+        &[],
     );
     assert_eq!(got.trim_end_matches('\n'), head.trim_end_matches('\n'));
+}
+
+mod parts {
+    use snx_writer::part_table::{
+        AlternateSymbol, Class, Document, FootprintBinding, LabelledDocument, Mpn, Param, PartRow,
+        Ref, Supply, Table, hash_document, write_classes, write_table,
+    };
+
+    use super::fixture;
+
+    const LIB: &str = "01940000-0000-7000-8000-000000000001";
+
+    fn r(n: u8) -> Ref {
+        Ref {
+            library_id: LIB.into(),
+            uuid: format!("01940000-0000-7000-8000-0000000000{n:02x}"),
+        }
+    }
+
+    fn mpn(manufacturer: &str, mpn: &str) -> Mpn {
+        Mpn {
+            manufacturer: manufacturer.into(),
+            mpn: mpn.into(),
+            status: "Primary".into(),
+            notes: None,
+        }
+    }
+
+    fn row(id: u8, pn: &str, class: &str) -> PartRow {
+        PartRow {
+            row_id: format!("01940000-0000-7000-8000-0000000000{id:02x}"),
+            internal_pn: pn.into(),
+            class: class.into(),
+            datasheets: vec![],
+            state: "Draft".into(),
+            symbol: r(0x11),
+            footprint: None,
+            alternate_footprints: vec![],
+            sim: None,
+            primary_mpn: mpn("Example Corp", "X"),
+            alternates: vec![],
+            supply: vec![],
+            parameters: vec![],
+            pin_map_overrides: vec![],
+            created: "2026-01-01T00:00:00+00:00".into(),
+            updated: "2026-01-02T03:04:05+00:00".into(),
+            version: "1.0.0".into(),
+            released: false,
+            symbol_version: "1.0.0".into(),
+            footprint_version: String::new(),
+            sim_version: String::new(),
+            description: String::new(),
+            alternate_symbols: vec![],
+        }
+    }
+
+    fn rows() -> (PartRow, PartRow, PartRow) {
+        let mut a = row(0x41, "R-10K-0603", "resistor");
+        a.datasheets = vec![LabelledDocument {
+            label: String::new(),
+            document: Document::Url("https://example.com/datasheets/r0603.pdf".into()),
+        }];
+        a.state = "Released".into();
+        a.footprint = Some(r(0x21));
+        a.alternate_footprints = vec![FootprintBinding {
+            footprint: r(0x22),
+            version: "1.0.0".into(),
+            pin_map_overrides: vec![],
+        }];
+        a.primary_mpn = mpn("Example Corp", "EX-R0603-10K");
+        a.alternates = vec![Mpn {
+            manufacturer: "Sample Inc".into(),
+            mpn: "SI-10K-0603".into(),
+            status: "Approved".into(),
+            notes: Some("drop-in".into()),
+        }];
+        a.supply = vec![Supply {
+            distributor: "ExampleDistributor".into(),
+            sku: "ED-123".into(),
+            url: Some("https://example.com/p/ED-123".into()),
+            moq: Some(100),
+        }];
+        a.parameters = vec![
+            ("tolerance".into(), Param::Text("1%".into())),
+            (
+                "resistance".into(),
+                Param::Measurement {
+                    value: 10000.0,
+                    unit: "ohm".into(),
+                },
+            ),
+            (
+                "power".into(),
+                Param::Measurement {
+                    value: 0.1,
+                    unit: "W".into(),
+                },
+            ),
+        ];
+        a.released = true;
+        a.footprint_version = "1.0.0".into();
+        a.description = "10 kΩ 1% 0.1 W 0603".into();
+        a.alternate_symbols = vec![AlternateSymbol {
+            symbol: r(0x12),
+            symbol_version: "1.0.0".into(),
+            label: "Alternate drawing".into(),
+        }];
+
+        let mut b = row(0x42, "R-1K-0805", "resistor");
+        b.datasheets = vec![
+            LabelledDocument {
+                label: "Datasheet".into(),
+                document: Document::Url("https://example.com/datasheets/r0805.pdf".into()),
+            },
+            LabelledDocument {
+                label: "Errata".into(),
+                document: Document::HashPinned {
+                    hash: "0d0838668315bb2a467097ac6a308b2241c798498df919291e9a42ae13240b5b".into(),
+                    filename: "errata.pdf".into(),
+                },
+            },
+        ];
+        b.footprint = Some(r(0x22));
+        b.primary_mpn = mpn("Example Corp", "EX-R0805-1K");
+        b.parameters = vec![
+            ("pad_count".into(), Param::Number(2.0)),
+            ("aec_q200".into(), Param::Bool(true)),
+        ];
+        b.pin_map_overrides = vec![("1".into(), "2".into()), ("2".into(), "1".into())];
+        b.version = "0.0.1".into();
+        b.footprint_version = "1.0.0".into();
+
+        let mut c = row(0x43, "U-NAND-DUAL", "ic");
+        c.state = "InReview".into();
+        c.symbol = r(0x12);
+        c.primary_mpn = mpn("Example Corp", "EX-74-00");
+        c.parameters = vec![
+            (
+                "supply_voltage".into(),
+                Param::Measurement {
+                    value: 5.0,
+                    unit: "V".into(),
+                },
+            ),
+            ("designator_prefix".into(), Param::Text("U".into())),
+        ];
+        c.description = "Dual NAND, symbol only".into();
+        (a, b, c)
+    }
+
+    #[test]
+    fn the_classes_and_part_tables_match_the_fixture_byte_for_byte() {
+        let Some(want) = fixture("Conformance.snxlib") else {
+            return;
+        };
+        let (a, b, c) = rows();
+        let classes = [
+            Class {
+                key: "resistor".into(),
+                label: "Resistor".into(),
+            },
+            Class {
+                key: "ic".into(),
+                label: "Integrated Circuit".into(),
+            },
+        ];
+        let got = format!(
+            "{}{}{}",
+            write_classes(&classes),
+            write_table(&Table {
+                name: "logic".into(),
+                rows: vec![c]
+            }),
+            write_table(&Table {
+                name: "resistors".into(),
+                rows: vec![b, a]
+            })
+        );
+        let from = want.find("\n[[classes]]").expect("classes");
+        let to = want
+            .find("\n[tables.resistors.column_types]")
+            .expect("sidecar");
+        assert_eq!(got, &want[from..to]);
+    }
+
+    #[test]
+    fn the_hash_documents_match_the_fixture_bytes() {
+        let (a, b, c) = rows();
+        for (id, row) in [(0x41, a), (0x42, b), (0x43, c)] {
+            let name = format!("content-hash/01940000-0000-7000-8000-0000000000{id:02x}.json");
+            // `fixture` reads below `library/`; the hash documents sit beside it.
+            let Some(dir) = std::env::var_os("SIGNEX_FORMAT_FIXTURES") else {
+                eprintln!("skipped: SIGNEX_FORMAT_FIXTURES is not set");
+                return;
+            };
+            let want = std::fs::read_to_string(std::path::Path::new(&dir).join(&name))
+                .expect("hash document");
+            assert_eq!(hash_document(&row), want, "{name}");
+        }
+    }
 }

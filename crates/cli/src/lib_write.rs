@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use kicad_parser::libids::item_id;
+use kicad_parser::parts::build_parts;
 use kicad_parser::symlib::to_snx::to_symbol_file;
 use kicad_parser::{Item, ItemKind, Severity};
 use snx_writer::{write_footprint_file, write_manifest, write_symbol_file};
@@ -22,6 +23,8 @@ pub struct Built {
     pub files: Vec<(String, Vec<u8>)>,
     pub written: Counts,
     pub items: Vec<Item>,
+    /// Symbols that could have a part row (not power symbols).
+    pub candidates: usize,
 }
 
 /// A file name for a symbol envelope: lower-case ASCII letters and digits,
@@ -116,14 +119,31 @@ pub fn build(read: &Read, library_id: Uuid, name: &str, emitter: &Emitter) -> Bu
         done += 1;
         emitter.progress(done, Some(total), &fp.footprint.name);
     }
+    // Part rows: one per symbol that is not a power symbol, whose footprint was converted.
+    let footprints: HashSet<String> = read
+        .footprints
+        .iter()
+        .map(|f| f.footprint.uuid.clone())
+        .collect();
+    let parts = build_parts(&read.symbols, library_id, &footprints);
+    written.parts = parts.rows;
+    items.extend(parts.items);
     files.push((
         manifest_name(name),
-        write_manifest(&library_id.to_string(), name, None).into_bytes(),
+        write_manifest(
+            &library_id.to_string(),
+            name,
+            None,
+            &parts.classes,
+            &parts.tables,
+        )
+        .into_bytes(),
     ));
     Built {
         files,
         written,
         items,
+        candidates: parts.candidates,
     }
 }
 

@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use clap::{Parser, Subcommand};
 
 use crate::contract::{Counts, Exit, Outcome, describe};
-use crate::lib_inputs::{LibraryArgs, validate};
+use crate::lib_inputs::{InputKind, LibraryArgs, validate};
 use crate::lib_read::read_inputs;
 use crate::lib_report::{LibraryReport, Source, now_utc};
 use crate::lib_write::build;
@@ -115,8 +115,16 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
                 .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
         })
         .collect();
+    // Default name: the first input's stem; for a library table (whose own
+    // name says nothing) the folder it is in.
     let name = args.name.clone().unwrap_or_else(|| {
-        inputs.first().and_then(|(p, _)| p.file_stem()).map_or_else(
+        let from = inputs.first().map(|(p, kind)| match kind {
+            InputKind::SymLibTable | InputKind::FpLibTable => {
+                p.parent().and_then(std::path::Path::file_stem)
+            }
+            _ => p.file_stem(),
+        });
+        from.flatten().map_or_else(
             || "library".to_string(),
             |s| s.to_string_lossy().into_owned(),
         )
@@ -132,7 +140,7 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
     }
     let started = now_utc();
     emitter.phase("read", Some(inputs.len()));
-    let read = match read_inputs(&inputs, library_id, emitter) {
+    let read = match read_inputs(&inputs, library_id, &args.search_path, emitter) {
         Ok(r) => r,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
@@ -175,6 +183,7 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
     let built = build(&read, library_id, &name, emitter);
     report.items.extend(built.items);
     report.written_counts = built.written;
+    report.source_counts.parts = built.candidates;
     if args.dry_run {
         return finish(&report, &out, Vec::new(), &report_path);
     }
@@ -193,7 +202,7 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         } else {
             Vec::new()
         };
-        Ok(stage.commit(&stale)?)
+        stage.commit(&stale)
     })();
     match staged {
         Ok(files) => {

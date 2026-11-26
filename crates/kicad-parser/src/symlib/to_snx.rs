@@ -68,6 +68,10 @@ pub fn to_symbol_file(
 ) -> SymbolFile {
     let mut symbols = Vec::new();
     for s in &lib.symbols {
+        // A derived symbol is a part row on its parent's symbol, not a symbol.
+        if s.extends.is_some() {
+            continue;
+        }
         let Some(units) = lib.effective_units(s) else {
             continue; // reported by the reader (extends_missing / cycle)
         };

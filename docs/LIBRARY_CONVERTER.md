@@ -45,7 +45,8 @@ a `.snxlib` manifest into `--output`. Exit 0 when only `info` / `approximated`
 items arose, 2 when something was dropped or an item failed, 1 when nothing
 usable could be read. `--dry-run` maps everything and writes only the report.
 `--update` needs the report of a library with the same id and overwrites in
-place. Library tables, 3D models and part rows are not converted yet.
+place. Library tables are read (each listed library is converted) and part rows are
+written (`LIBRARY_MAPPING.md`); 3D models are not converted yet.
 
 ### Streams
 

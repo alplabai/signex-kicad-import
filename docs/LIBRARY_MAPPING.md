@@ -154,6 +154,7 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 | `footprint.zone_dropped`, `footprint.graphic_layer_dropped`, `footprint.graphic_unreadable`, `pad.layer_dropped` | dropped | |
 | `pad.paste_ratio_not_carried`, `pad.property_not_carried`, `pad.slot_orientation_approximated`, `pad.slot_not_placeable`, `footprint.courtyard_approximated`, `footprint.tags_in_description`, `footprint.attr_not_carried`, `footprint.text_rotation_dropped`, `pad.npth_copper_dropped`, `pad.text_sanitized` | approximated | |
 | `model.not_found`, `model.format_unsupported`, `model.path_refused`, `model.too_large`, `model.unreadable`, `model.extra_dropped`, `model.skipped` | dropped | see the model row |
+| `pad.settings_not_carried`, `footprint.settings_not_carried` | approximated | per footprint, with the setting names and counts in `detail`: clearance, zone connection, thermal bridge width and gap, pin function and type, die length, net-tie groups, ... (anything the converter does not read or carry that a pad or footprint holds; a new KiCad token shows up here instead of vanishing) |
 | `model.step_substituted` | info | |
 | `model.scale_not_carried`, `model.offset_inches` | approximated | |
 | `part.written` | info | the row was written; `id` is its `row_id` |

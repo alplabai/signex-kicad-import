@@ -226,6 +226,7 @@ pub fn convert_footprint(
     let board =
         converted.ok_or_else(|| ParseError::InvalidValue("footprint does not read".into()))?;
     let mut sink = Sink {
+        source: &source,
         items,
         counts: Vec::new(),
     };
@@ -247,6 +248,7 @@ pub fn convert_footprint(
             "footprint zone dropped; the library footprint holds no copper pours",
         );
     }
+    report_unmapped_settings(&root, &mut sink);
     let margins = Margins {
         mask: number_of(&root, "solder_mask_margin"),
         paste: number_of(&root, "solder_paste_margin"),
@@ -319,6 +321,132 @@ pub fn convert_footprint(
     })
 }
 
+/// Pad tokens that are carried or reported elsewhere (a drill offset and
+/// chamfered corners by the board converter, margins and the paste ratio here,
+/// custom-pad primitives by the shape code) or are identity and state only.
+const PAD_KNOWN: &[&str] = &[
+    "at",
+    "size",
+    "layers",
+    "drill",
+    "roundrect_rratio",
+    "chamfer_ratio",
+    "chamfer",
+    "solder_mask_margin",
+    "solder_paste_margin",
+    "solder_paste_margin_ratio",
+    "property",
+    "primitives",
+    "options",
+    "uuid",
+    "tstamp",
+    "net",
+    "locked",
+    "teardrops",
+    "tenting",
+    "rect_delta",
+];
+
+/// Footprint tokens that are carried or reported elsewhere, or are identity,
+/// provenance and state only.
+const FOOTPRINT_KNOWN: &[&str] = &[
+    "version",
+    "generator",
+    "generator_version",
+    "layer",
+    "descr",
+    "tags",
+    "property",
+    "attr",
+    "at",
+    "pad",
+    "model",
+    "zone",
+    "uuid",
+    "tstamp",
+    "locked",
+    "placed",
+    "solder_mask_margin",
+    "solder_paste_margin",
+    "solder_paste_ratio",
+    "path",
+    "sheetname",
+    "sheetfile",
+    "embedded_fonts",
+    "embedded_files",
+    "group",
+    "image",
+    "dimension",
+    "fp_line",
+    "fp_rect",
+    "fp_circle",
+    "fp_arc",
+    "fp_poly",
+    "fp_curve",
+    "fp_text",
+    "fp_text_box",
+    "teardrops",
+    "private_layers",
+];
+
+/// Settings of a pad or footprint that Signex's library footprint has no field
+/// for (clearance, zone connection, thermal bridge and gap, pin function and
+/// type, die length, net-tie groups, ...). They are counted and reported once
+/// per footprint with their names, never dropped silently.
+fn report_unmapped_settings(root: &SExpr, sink: &mut Sink<'_>) {
+    let mut pads: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for pad in root.find_all("pad") {
+        for child in pad.children() {
+            let word = match child {
+                SExpr::List(_) => child.keyword(),
+                SExpr::Atom(a) => Some(a.as_str()),
+            };
+            // The first atoms are the pad's number, type and shape.
+            let Some(word) = word else { continue };
+            if matches!(child, SExpr::Atom(_)) {
+                continue;
+            }
+            if !PAD_KNOWN.contains(&word) {
+                *pads.entry(word.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut fp: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for child in root.children() {
+        if let (SExpr::List(_), Some(word)) = (child, child.keyword())
+            && !FOOTPRINT_KNOWN.contains(&word)
+        {
+            *fp.entry(word.to_string()).or_insert(0) += 1;
+        }
+    }
+    for (code, message, found) in [
+        (
+            "pad.settings_not_carried",
+            "pad settings with no Signex field",
+            pads,
+        ),
+        (
+            "footprint.settings_not_carried",
+            "footprint settings with no Signex field",
+            fp,
+        ),
+    ] {
+        if !found.is_empty() {
+            let names: Vec<&str> = found.keys().map(String::as_str).collect();
+            sink.items.push(
+                Item::new(
+                    ItemKind::Footprint,
+                    sink.source.to_string(),
+                    code,
+                    Severity::Approximated,
+                    format!("{message}: {}", names.join(", ")),
+                )
+                .with_detail(json!({ "settings": found })),
+            );
+        }
+    }
+}
+
 /// `(attr ..)` words: `exclude_from_bom` makes the part a no-BOM component;
 /// the placement and board flags have no field.
 fn apply_attr(root: &SExpr, f: &mut out::Footprint, sink: &mut Sink<'_>) {
@@ -343,6 +471,7 @@ fn apply_attr(root: &SExpr, f: &mut out::Footprint, sink: &mut Sink<'_>) {
 
 /// Items of one footprint, counted by code.
 struct Sink<'a> {
+    source: &'a str,
     items: &'a mut Vec<Item>,
     counts: Vec<(&'static str, Severity, &'static str, usize)>,
 }
@@ -781,22 +910,4 @@ fn chain(segments: &[([f64; 2], [f64; 2])]) -> Option<Vec<[f64; 2]>> {
     for _ in 1..segments.len() {
         let next = segments.iter().enumerate().find_map(|(i, &(a, b))| {
             if used[i] {
-                None
-            } else if near(a, at) {
-                Some((i, b))
-            } else if near(b, at) {
-                Some((i, a))
-            } else {
-                None
-            }
-        })?;
-        used[next.0] = true;
-        ring.push(at);
-        at = next.1;
-    }
-    (near(at, ring[0]) && ring.len() >= 3).then_some(ring)
-}
-
-#[cfg(test)]
-#[path = "footprint_lib_tests.rs"]
-mod tests;
+               

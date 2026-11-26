@@ -486,3 +486,51 @@ fn a_model_path_cannot_leave_the_folders_it_may_be_read_from() {
         .expect("item");
     assert!(missing.message.contains("${NOPE}"));
 }
+
+#[test]
+fn every_pad_and_footprint_setting_is_mapped_or_reported() {
+    let (file, items) = special("Overrides_Test.kicad_mod");
+    assert!(file.is_ok());
+    let by_code = |code: &str| {
+        items
+            .iter()
+            .find(|i| i.code == code)
+            .unwrap_or_else(|| panic!("no {code} in {:?}", codes_of(&items)))
+    };
+    let pad = by_code("pad.settings_not_carried");
+    let names: Vec<&str> = pad.detail["settings"]
+        .as_object()
+        .expect("settings")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "clearance",
+            "die_length",
+            "pinfunction",
+            "pintype",
+            "remove_unused_layers",
+            "thermal_bridge_width",
+            "thermal_gap",
+            "zone_connect"
+        ]
+    );
+    assert_eq!(pad.detail["settings"]["clearance"], 2);
+    assert_eq!(pad.severity, Severity::Approximated);
+    let fp = by_code("footprint.settings_not_carried");
+    let names: Vec<&str> = fp.detail["settings"]
+        .as_object()
+        .expect("settings")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(names, ["clearance", "net_tie_pad_groups", "zone_connect"]);
+    // Each attribute word with no field, the drill offset and the chamfered corners.
+    assert_eq!(by_code("footprint.attr_not_carried").detail["count"], 3);
+    assert_eq!(
+        by_code("pad.drill_offset_ignored").severity,
+        Severity::Dropped
+    );
+   

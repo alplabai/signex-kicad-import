@@ -14,3 +14,4 @@ as the repository (GPL-3.0-or-later).
 - `Special.pretty/Margins_Test.kicad_mod`: footprint-level mask, paste and paste-ratio settings, a pad with its own mask margin, a line missing its end.
 - `Special.pretty/Bottom_Test.kicad_mod`: a footprint on the bottom side (refused).
 - `Models.pretty/`, `models/`, `outside.step`: 3D model resolution. `models/` holds a STEP file, a WRL-only model, a WRL with a STEP beside it and a symlink; `outside.step` lies outside every folder a model may come from. The footprints name them in the ways the tests need (variable, plain, `..`, absolute, link, missing, two models).
+- `Special.pretty/Overrides_Test.kicad_mod`: per-pad and footprint-level settings Signex has no field for (clearance, zone connection, thermal bridge and gap, pin function and type, die length, net-tie groups, board-only and other attributes, a drill offset, chamfered corners).

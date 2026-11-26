@@ -33,6 +33,8 @@ fn sample() -> Board {
             number: 1,
             name: "GND".into(),
         }),
+        solder_mask_margin: None,
+        paste_margin: None,
     };
     let square = vec![
         Point::new(-0.5, -0.5),

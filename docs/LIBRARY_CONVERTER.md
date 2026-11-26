@@ -13,7 +13,7 @@ Prints the contract's `describe` document and exits 0:
 |---|---|---|
 | KiCad symbol library (one file, many symbols) | `kicad_sym` | `library` |
 | KiCad symbol directory (one symbol per file) | `kicad_symdir` | `library` |
-| KiCad footprint library (folder) | `pretty` | `library` |
+| KiCad footprint library (folder), or one footprint file | `pretty`, `kicad_mod` | `library` |
 | KiCad library tables | `sym-lib-table`, `fp-lib-table` | `library` |
 
 A library table has no extension, so its **full file name** is the entry in
@@ -35,12 +35,17 @@ Inputs are classified by name and shape: `*.kicad_sym` (file),
 `*.kicad_symdir` (folder), `*.pretty` (folder), `sym-lib-table` and
 `fp-lib-table` (files).
 
-Current state: the read phase runs (every input is hashed into the report's
-`sources`; symbol libraries are read by `kicad_parser::symlib`, which fills
-`counts.source.symbols` and the report items, see `KICAD_SYMBOL_FORMAT.md`;
-an input that does not parse is an `error` item, not a failed run), the report is written into `--output`, and the run then exits 1 with
-`error: "library output not implemented yet"`. The Signex writers land in later
-units; the id check of `--update` comes with them.
+Current state: the read phase hashes every input and reads symbol libraries
+(`kicad_parser::symlib`, see `KICAD_SYMBOL_FORMAT.md`) and footprints
+(`.pretty` folders and single `.kicad_mod` files, `kicad_parser::footprint_lib`);
+an input that does not parse is an `error` item, not a failed run. The convert
+phase maps them to Signex symbols and footprints (`LIBRARY_MAPPING.md`) and the
+write phase stages and moves `symbols/*.snxsym`, `footprints/<uuid>.snxfpt` and
+a `.snxlib` manifest into `--output`. Exit 0 when only `info` / `approximated`
+items arose, 2 when something was dropped or an item failed, 1 when nothing
+usable could be read. `--dry-run` maps everything and writes only the report.
+`--update` needs the report of a library with the same id and overwrites in
+place. Library tables, 3D models and part rows are not converted yet.
 
 ### Streams
 

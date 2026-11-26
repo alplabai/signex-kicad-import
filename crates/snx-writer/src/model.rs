@@ -149,6 +149,10 @@ pub struct Pad {
     pub layers: Vec<String>,
     /// Net number and name; `None` for no net.
     pub net: Option<Net>,
+    /// The pad's own solder mask and paste margins; the board file has no
+    /// place for them, the library footprint does.
+    pub solder_mask_margin: Option<f64>,
+    pub paste_margin: Option<f64>,
 }
 
 /// A drawing inside a footprint, footprint-local.

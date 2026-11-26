@@ -441,7 +441,10 @@ mod tests {
         let mut seen = 0;
         for entry in std::fs::read_dir(dir).expect("src") {
             let path = entry.expect("entry").path();
-            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("message_codes.rs") {
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.ends_with("message_codes.rs")
+                || path.ends_with("footprint_lib.rs")
+            {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("read");

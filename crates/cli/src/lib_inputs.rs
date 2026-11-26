@@ -77,6 +77,7 @@ pub enum InputKind {
     SymbolFile,
     SymbolDir,
     FootprintDir,
+    FootprintFile,
     SymLibTable,
     FpLibTable,
 }
@@ -100,6 +101,7 @@ pub fn classify(path: &Path) -> Result<InputKind, String> {
         (_, "kicad_sym", false) => InputKind::SymbolFile,
         (_, "kicad_symdir", true) => InputKind::SymbolDir,
         (_, "pretty", true) => InputKind::FootprintDir,
+        (_, "kicad_mod", false) => InputKind::FootprintFile,
         (_, "kicad_sym", true) => {
             return Err(format!(
                 "{} is a folder; a .kicad_sym is one file",
@@ -111,7 +113,7 @@ pub fn classify(path: &Path) -> Result<InputKind, String> {
         }
         _ => {
             return Err(format!(
-                "unsupported input {}: expected .kicad_sym, .kicad_symdir, .pretty, \
+                "unsupported input {}: expected .kicad_sym, .kicad_symdir, .pretty, .kicad_mod, \
                  sym-lib-table or fp-lib-table",
                 path.display()
             ));

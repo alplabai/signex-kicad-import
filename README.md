@@ -33,8 +33,9 @@ Schematic conversion is not part of this release.
 For Signex's library converter contract, `signex-kicad-import describe --json`
 and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
 libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
-`library` command reads symbol libraries (`docs/KICAD_SYMBOL_FORMAT.md`) but
-does not write a library yet.
+`library` command converts KiCad symbol libraries and footprints into a Signex
+library directory (`docs/LIBRARY_MAPPING.md`; symbols and footprints, no part
+rows or 3D models yet).
 
 ## What the board conversion covers
 
@@ -80,6 +81,17 @@ always gives the same files.
 `crates/kicad-parser/tests/real_boards.rs` converts four real boards, one
 per source format generation (6 to 9); they are listed with their
 licences in `crates/kicad-parser/tests/fixtures/README.md`.
+
+The writers for `.snxsym`, `.snxfpt` and the `.snxlib` manifest are checked
+against the Signex library format's conformance fixtures, which belong to the
+Signex repository and are not copied here:
+
+```bash
+SIGNEX_FORMAT_FIXTURES=/path/to/signex/docs/fixtures/library-format \
+  cargo test -p snx-writer --test library_conformance
+```
+
+Without the variable those tests print a skip message and pass.
 
 ## Install
 

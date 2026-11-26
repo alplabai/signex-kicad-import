@@ -17,6 +17,7 @@ mod lib_cmd;
 mod lib_inputs;
 mod lib_read;
 mod lib_report;
+mod lib_write;
 mod progress;
 mod staging;
 

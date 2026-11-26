@@ -256,6 +256,8 @@ fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Option<Pad> {
         drill_shape,
         layers,
         net: cx.nets.net_of(node),
+        solder_mask_margin: number_of(node, "solder_mask_margin"),
+        paste_margin: number_of(node, "solder_paste_margin"),
     })
 }
 

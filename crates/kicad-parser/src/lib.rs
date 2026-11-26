@@ -21,6 +21,7 @@
 mod board_graphics;
 pub mod error;
 mod footprint;
+pub mod footprint_lib;
 mod geometry;
 mod ids;
 pub mod items;

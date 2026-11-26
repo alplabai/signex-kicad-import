@@ -31,7 +31,7 @@ pub fn describe() -> Value {
         "inputs": [
             { "label": "KiCad symbol library", "extensions": ["kicad_sym"], "kind": "library" },
             { "label": "KiCad symbol directory", "extensions": ["kicad_symdir"], "kind": "library" },
-            { "label": "KiCad footprint library", "extensions": ["pretty"], "kind": "library" },
+            { "label": "KiCad footprint library", "extensions": ["pretty", "kicad_mod"], "kind": "library" },
             {
                 "label": "KiCad library table",
                 "extensions": ["sym-lib-table", "fp-lib-table"],

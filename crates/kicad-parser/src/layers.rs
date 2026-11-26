@@ -169,6 +169,19 @@ impl Stack {
         Self { layers, aliases }
     }
 
+    /// The stack of a library footprint, which has no `(layers)` table: the
+    /// two outer copper layers and the fixed layers by their standard names.
+    pub(crate) fn library(report: &mut Report) -> Self {
+        const LAYERS: &str = "(kicad_mod (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal) \
+            (37 \"F.SilkS\" user) (36 \"B.SilkS\" user) (39 \"F.Mask\" user) (38 \"B.Mask\" user) \
+            (35 \"F.Paste\" user) (34 \"B.Paste\" user) (49 \"F.Fab\" user) (48 \"B.Fab\" user) \
+            (47 \"F.CrtYd\" user) (46 \"B.CrtYd\" user)))";
+        match crate::sexpr::parse(LAYERS) {
+            Ok(root) => Self::read(&root, report),
+            Err(_) => Self::read(&SExpr::List(Vec::new()), report),
+        }
+    }
+
     /// The token for a layer name an item uses: the board's own copper
     /// names first, then the fixed names.
     pub(crate) fn token(&self, name: &str) -> Option<String> {

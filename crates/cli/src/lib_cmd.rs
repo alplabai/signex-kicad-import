@@ -12,8 +12,11 @@ use clap::{Parser, Subcommand};
 use crate::contract::{Counts, Exit, Outcome, describe};
 use crate::lib_inputs::{LibraryArgs, validate};
 use crate::lib_read::read_inputs;
-use crate::lib_report::{LibraryReport, now_utc};
+use crate::lib_report::{LibraryReport, Source, now_utc};
+use crate::lib_write::build;
 use crate::progress::{Emitter, HEARTBEAT};
+use crate::staging::Staging;
+use kicad_parser::libids::library_id;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -105,35 +108,138 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::failed(e),
     };
+    let names: Vec<String> = inputs
+        .iter()
+        .map(|(p, _)| {
+            p.file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+        })
+        .collect();
+    let name = args.name.clone().unwrap_or_else(|| {
+        inputs.first().and_then(|(p, _)| p.file_stem()).map_or_else(
+            || "library".to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        )
+    });
+    let library_id = match &args.library_id {
+        Some(id) => uuid::Uuid::parse_str(id).unwrap_or_default(),
+        None => library_id(&name, &names.iter().map(String::as_str).collect::<Vec<_>>()),
+    };
+    if args.update
+        && let Err(e) = check_update_target(&out, library_id)
+    {
+        return Outcome::failed(e);
+    }
     let started = now_utc();
     emitter.phase("read", Some(inputs.len()));
-    let read = match read_inputs(&inputs, emitter) {
+    let read = match read_inputs(&inputs, library_id, emitter) {
         Ok(r) => r,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
-    let report = LibraryReport {
+    let mut report = LibraryReport {
         started,
-        sources: read.sources,
-        library_id: args.library_id.clone().map(|s| s.to_ascii_lowercase()),
+        sources: read
+            .sources
+            .iter()
+            .map(|s| Source {
+                path: s.path.clone(),
+                sha256: s.sha256.clone(),
+            })
+            .collect(),
+        library_id: Some(library_id.to_string()),
         source_counts: read.counts,
         written_counts: Counts::default(),
-        items: read.items,
+        items: read.items.clone(),
     };
     // A run that read its sources leaves its report even when it fails.
     let report_path = match report.write(&out) {
         Ok(p) => p,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
-    test_panic("write");
-    Outcome {
+    let failed = |error: String, report: &LibraryReport| Outcome {
         exit: Exit::Failed,
-        error: Some("library output not implemented yet".to_string()),
+        error: Some(error),
         // Nothing of the library was written; the report stays for inspection.
         library: None,
-        report: Some(report_path),
+        report: Some(report_path.clone()),
         files: Vec::new(),
         written: Counts::default(),
-        items: report.items,
+        items: report.items.clone(),
+    };
+    if read.counts.symbols + read.counts.footprints == 0 {
+        return failed(
+            "no symbols or footprints could be read from the inputs".to_string(),
+            &report,
+        );
+    }
+    let built = build(&read, library_id, &name, emitter);
+    report.items.extend(built.items);
+    report.written_counts = built.written;
+    if args.dry_run {
+        return finish(&report, &out, Vec::new(), &report_path);
+    }
+    emitter.phase("write", Some(built.files.len()));
+    let staged = (|| -> anyhow::Result<Vec<std::path::PathBuf>> {
+        let mut stage = Staging::new(&out)?;
+        for (done, (rel, bytes)) in built.files.iter().enumerate() {
+            emitter.progress(done, Some(built.files.len()), rel);
+            stage.write(rel, bytes)?;
+        }
+        test_panic("write");
+        let placed = stage.commit(args.update)?;
+        Ok(placed)
+    })();
+    match staged {
+        Ok(files) => {
+            emitter.progress(built.files.len(), Some(built.files.len()), "done");
+            finish(&report, &out, files, &report_path)
+        }
+        Err(e) => failed(format!("{e:#}"), &report),
+    }
+}
+
+/// The library was written (or, for a dry run, mapped): rewrite the report
+/// with the written counts and report the exit by the items.
+fn finish(
+    report: &LibraryReport,
+    out: &std::path::Path,
+    files: Vec<std::path::PathBuf>,
+    report_path: &std::path::Path,
+) -> Outcome {
+    if let Err(e) = report.write(out) {
+        return Outcome::failed(format!("{e:#}"));
+    }
+    Outcome {
+        exit: Exit::of_items(&report.items),
+        error: None,
+        library: Some(out.to_path_buf()),
+        report: Some(report_path.to_path_buf()),
+        files,
+        written: report.written_counts,
+        items: report.items.clone(),
+    }
+}
+
+/// `--update` needs a library this converter wrote from the same source: its
+/// report names the same library id.
+fn check_update_target(out: &std::path::Path, library_id: uuid::Uuid) -> Result<(), String> {
+    let text = std::fs::read_to_string(out.join("import-report.json")).map_err(|_| {
+        format!(
+            "--update: {} holds no import-report.json; it is not a library this converter wrote",
+            out.display()
+        )
+    })?;
+    let id = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v["library_id"].as_str().map(str::to_string));
+    if id.as_deref() == Some(library_id.to_string().as_str()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "--update: the library in {} has id {}, this run derives {library_id}; pass --library-id to update it",
+            out.display(),
+            id.unwrap_or_else(|| "(none)".to_string())
+        ))
     }
 }
 

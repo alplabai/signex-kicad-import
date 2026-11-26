@@ -40,6 +40,8 @@ pub struct Built {
     pub ledger_rows: Vec<(String, String)>,
     pub ledger_symbols: Vec<String>,
     pub ledger_footprints: Vec<String>,
+    /// A reason the update cannot be done at all (nothing has been written).
+    pub refuse: Option<String>,
 }
 
 /// A file name for a symbol envelope: lower-case ASCII letters and digits,
@@ -110,6 +112,8 @@ pub fn build(
     split: Option<Split<'_>>,
 ) -> Built {
     let mut footprint_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut refuse: Option<String> = None;
+    let untracked = |rel: &str| update.is_some_and(|u| u.previous.exists_untracked(rel));
     let mut file_libs: Vec<(String, String)> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
     let mut ledger_symbols: Vec<String> = Vec::new();
@@ -130,6 +134,18 @@ pub fn build(
         let mut file = to_symbol_file(&symbols.lib, library, file_uuid.clone(), &id_of, &mut items);
         written.symbols += file.symbols.len();
         let mut rel = format!("symbols/{}.snxsym", slug(library));
+        // A file of the user's under that name is never overwritten.
+        if untracked(&rel) {
+            items.push(Item::new(
+                ItemKind::Library,
+                library.clone(),
+                "update.file_not_ours",
+                Severity::Info,
+                format!("{rel} exists and was not written by this converter; the symbols go to <file id>.snxsym instead"),
+            ));
+            taken.insert(rel.clone());
+            rel = format!("symbols/{file_uuid}.snxsym");
+        }
         if !taken.insert(rel.clone()) {
             rel = format!("symbols/{file_uuid}.snxsym");
             taken.insert(rel.clone());
@@ -180,6 +196,19 @@ pub fn build(
         written.footprints += 1;
         written.models += fp.models.len();
         let rel = format!("footprints/{}.snxfpt", fp.footprint.uuid);
+        if untracked(&rel) {
+            // The name is the footprint's id, so there is no other name to use.
+            written.footprints -= 1;
+            written.models -= fp.models.len();
+            items.push(Item::new(
+                ItemKind::Footprint,
+                format!("{lib}:{}", fp.footprint.name),
+                "update.file_not_ours",
+                Severity::Error,
+                format!("{rel} exists and was not written by this converter; the footprint is not written"),
+            ));
+            continue;
+        }
         if let Some(u) = update {
             let (uuid, version) = u.previous.apply_footprint(&rel, &mut fp, u.now);
             footprint_versions.insert(uuid, version);
@@ -228,8 +257,10 @@ pub fn build(
         &footprints,
         &row_update,
     );
+    let gen_tables = parts.tables.clone();
     let generated: HashSet<String> = parts.generated.iter().map(|(id, _)| id.clone()).collect();
     let mut ledger_rows = parts.generated.clone();
+    let mut retained_rows: HashSet<String> = HashSet::new();
     if let Some(u) = update {
         let retained = u.previous.carry_over(
             &generated,
@@ -240,6 +271,7 @@ pub fn build(
             &mut parts.items,
         );
         ledger_rows.extend(u.previous.retained_rows(&retained));
+        retained_rows = retained;
     }
     written.parts = parts.rows;
     items.extend(parts.items);
@@ -257,18 +289,68 @@ pub fn build(
         .unwrap_or_default();
     let mut meta = lib_notice::meta(provenance.license, provenance.source, requires);
     meta.description = None;
-    files.push((
-        manifest_name(name),
-        write_manifest(
+    // An update edits the manifest it finds; a first run writes one.
+    let manifest_rel = manifest_name(name);
+    let edited = update.and_then(|u| u.previous.manifest_text().map(|t| (u, t)));
+    let manifest = match edited {
+        Some((u, old)) => {
+            let generated_tables: Vec<(String, Vec<(String, String)>)> = gen_tables
+                .iter()
+                .filter(|t| t.raw_tsv.is_none())
+                .map(|t| (t.name.clone(), snx_writer::part_table::table_lines(t)))
+                .collect();
+            // A part number of the user's that a new row would repeat: refuse.
+            for (_, lines) in &generated_tables {
+                for (id, line) in lines {
+                    let pn = line.split('\t').nth(1).unwrap_or("");
+                    if let Some(user_id) = u.previous.user_row_with_pn(pn) {
+                        refuse.get_or_insert(format!(
+                            "--update: the part number {pn} of the new row {id} is already used by the row {user_id} that was not written by this converter; rename one of them"
+                        ));
+                    }
+                }
+            }
+            let remove = u.previous.removable_rows(&retained_rows);
+            match crate::lib_manifest_edit::edit_manifest(
+                old,
+                &crate::lib_manifest_edit::Edit {
+                    name,
+                    meta: &meta,
+                    generated: generated_tables,
+                    remove_ids: &remove,
+                    classes: &parts.classes,
+                },
+            ) {
+                Ok((text, notes)) => {
+                    for n in notes {
+                        items.push(Item::new(
+                            ItemKind::Library,
+                            n.clone(),
+                            "update.table_name_conflict",
+                            Severity::Dropped,
+                            format!("a table named {n} of the user's has other columns; the converter's rows for it were not written"),
+                        ));
+                    }
+                    text
+                }
+                Err(e) => {
+                    refuse.get_or_insert(format!("--update: {e}"));
+                    String::new()
+                }
+            }
+        }
+        None => write_manifest(
             &library_id.to_string(),
             name,
             &meta,
             &parts.classes,
             &parts.tables,
-        )
-        .into_bytes(),
-    ));
-    if let Some(text) = lib_notice::license_text(provenance.license) {
+        ),
+    };
+    files.push((manifest_rel, manifest.into_bytes()));
+    if let Some(text) = lib_notice::license_text(provenance.license)
+        && !untracked(lib_notice::LICENSE_FILE)
+    {
         files.push((lib_notice::LICENSE_FILE.to_string(), text.into_bytes()));
     }
     let inputs: Vec<(String, String)> = read
@@ -296,10 +378,13 @@ pub fn build(
         .collect();
     libraries.sort();
     libraries.dedup();
-    files.push((
-        lib_notice::NOTICE_FILE.to_string(),
-        lib_notice::notice(provenance.license, provenance.source, &inputs, &libraries).into_bytes(),
-    ));
+    if !untracked(lib_notice::NOTICE_FILE) {
+        files.push((
+            lib_notice::NOTICE_FILE.to_string(),
+            lib_notice::notice(provenance.license, provenance.source, &inputs, &libraries)
+                .into_bytes(),
+        ));
+    }
     if let Some(s) = split {
         // The footprint library: its own manifest (no part tables), licence and notice.
         let meta = lib_notice::meta(provenance.license, provenance.source, Vec::new());
@@ -337,6 +422,7 @@ pub fn build(
         ledger_rows,
         ledger_symbols,
         ledger_footprints,
+        refuse,
     }
 }
 

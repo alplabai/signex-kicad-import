@@ -40,12 +40,10 @@ pub fn license_text(license: Option<&str>) -> Option<String> {
     (license? == "CC-BY-SA-4.0").then(|| {
         format!(
             "This library is licensed under the Creative Commons Attribution-ShareAlike 4.0\n\
-             International licence (CC-BY-SA-4.0), with the exception below, which is the\n\
-             exception of the KiCad libraries (https://www.kicad.org/libraries/license/).\n\n\
-             Exception\n---------\n\n{}\n{}\n\n\
+             International licence (CC-BY-SA-4.0), with the following exception of the KiCad\n\
+             libraries (https://www.kicad.org/libraries/license/):\n\n{}\n\n\
              Licence text\n------------\n\n{}",
             KICAD_EXCEPTION.trim_end(),
-            "(This exception applies to designs made with the library data; redistributing\nthe library, or parts of it, as a collection is under CC-BY-SA-4.0 without it.)",
             CC_BY_SA_4_0
         )
     })
@@ -78,6 +76,9 @@ pub fn notice(
     } else if license.is_some() {
         o.push_str("  - The converter has no text for this licence; add it as `LICENSE` and keep the upstream's attribution.\n");
     }
+    if license == Some("CC-BY-SA-4.0") {
+        o.push_str("\nNon-binding note: the exception in `LICENSE` is the KiCad libraries' own; as its publisher explains, it lets designs made with the library data stay free of the licence, while a redistributed collection of the libraries stays under CC-BY-SA-4.0. Read `LICENSE` and the publisher's page, not this note, for what applies.\n");
+    }
     o.push_str("\nRedistribute this library under the same licence as the source and keep this notice and `LICENSE`.\n");
     if !libraries.is_empty() {
         o.push_str("\n## Libraries\n\n");
@@ -103,6 +104,10 @@ mod tests {
         let text = license_text(Some("CC-BY-SA-4.0")).expect("text");
         assert!(text.contains("Attribution-ShareAlike 4.0 International"));
         assert!(text.contains("waives article 3 of the license"));
+        assert!(
+            !text.contains("This exception applies"),
+            "no interpretation in the licence file"
+        );
         assert!(license_text(Some("MIT")).is_none() && license_text(None).is_none());
         let n = notice(
             Some("CC-BY-SA-4.0"),

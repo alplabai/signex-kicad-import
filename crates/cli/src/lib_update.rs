@@ -30,12 +30,17 @@ use snx_writer::{write_footprint_file, write_symbol_file};
 struct OldEntry {
     table: String,
     row_id: String,
+    internal_pn: String,
     class: String,
+    cells: Vec<String>,
     old: OldRow,
 }
 
 #[derive(Default)]
 pub struct Previous {
+    out: PathBuf,
+    /// The text of the manifest an update edits.
+    manifest_text: Option<String>,
     /// Relative paths the previous run wrote, and the library each came from.
     files: Vec<String>,
     file_libs: HashMap<String, String>,
@@ -190,7 +195,10 @@ impl Previous {
     }
 
     pub fn load(out: &Path) -> Previous {
-        let mut p = Previous::default();
+        let mut p = Previous {
+            out: out.to_path_buf(),
+            ..Previous::default()
+        };
         let mut claimed: Vec<String> = Vec::new();
         if let Ok(text) = std::fs::read_to_string(out.join("import-report.json"))
             && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
@@ -264,6 +272,9 @@ impl Previous {
                 if e.path().extension().is_some_and(|x| x == "snxlib")
                     && let Some(doc) = read_toml(&e.path())
                 {
+                    if p.manifest_text.is_none() {
+                        p.manifest_text = std::fs::read_to_string(e.path()).ok();
+                    }
                     p.manifests
                         .push(e.file_name().to_string_lossy().into_owned());
                     p.read_manifest(&doc);
@@ -396,7 +407,9 @@ impl Previous {
                 self.rows.push(OldEntry {
                     table: name.clone(),
                     row_id: c[0].to_string(),
+                    internal_pn: c[1].to_string(),
                     class: c[2].to_string(),
+                    cells: c.iter().map(|s| (*s).to_string()).collect(),
                     old: OldRow {
                         line: line.to_string(),
                         created: c[13].to_string(),
@@ -410,6 +423,76 @@ impl Previous {
                 });
             }
         }
+    }
+
+    /// The text of the earlier manifest, which an update edits.
+    pub fn manifest_text(&self) -> Option<&str> {
+        self.manifest_text.as_deref()
+    }
+
+    /// Earlier row ids the converter wrote that go: every ledgered row except
+    /// those kept because their library failed to read.
+    pub fn removable_rows(&self, retained: &HashSet<String>) -> HashSet<String> {
+        self.ledger_rows
+            .keys()
+            .filter(|id| !retained.contains(*id))
+            .cloned()
+            .collect()
+    }
+
+    /// The row of the user's (not in the ledger) that has this part number.
+    pub fn user_row_with_pn(&self, pn: &str) -> Option<&str> {
+        self.rows
+            .iter()
+            .find(|r| r.internal_pn == pn && !self.ledger_rows.contains_key(&r.row_id))
+            .map(|r| r.row_id.as_str())
+    }
+
+    /// A file exists in the folder that the earlier report does not list: it is
+    /// the user's, and an update must not overwrite it.
+    pub fn exists_untracked(&self, rel: &str) -> bool {
+        std::fs::symlink_metadata(self.out.join(rel)).is_ok()
+            && !self.files.iter().any(|f| f == rel)
+    }
+
+    /// Of the files about to be deleted, those a row of the user's still points
+    /// at (by symbol or footprint id).
+    pub fn referenced_files(&self, stale: &[PathBuf]) -> Vec<PathBuf> {
+        let user_cells: Vec<&str> = self
+            .rows
+            .iter()
+            .filter(|r| !self.ledger_rows.contains_key(&r.row_id))
+            .flat_map(|r| {
+                [
+                    r.cells[5].as_str(),
+                    r.cells[6].as_str(),
+                    r.cells[7].as_str(),
+                    r.cells[22.min(r.cells.len() - 1)].as_str(),
+                ]
+            })
+            .collect();
+        stale
+            .iter()
+            .filter(|f| {
+                let rel = f.to_string_lossy();
+                let ids: Vec<String> = match self.envelopes.get(rel.as_ref()) {
+                    Some(env) => ["symbols", "footprints"]
+                        .iter()
+                        .flat_map(|k| {
+                            env.get(*k)
+                                .and_then(toml::Value::as_array)
+                                .into_iter()
+                                .flatten()
+                        })
+                        .filter_map(|t| t.as_table().map(|t| text(t, "uuid").to_string()))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                ids.iter()
+                    .any(|id| user_cells.iter().any(|c| c.contains(id.as_str())))
+            })
+            .cloned()
+            .collect()
     }
 
     /// The earlier rows by `row_id`, the run's `now` and the primitive

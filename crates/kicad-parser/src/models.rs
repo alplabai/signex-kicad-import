@@ -299,6 +299,16 @@ fn load(
         || "model.step".to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    // Signex defines its model frame (y up the board, rotations about fixed x,
+    // y, z in that order, offset in that frame). KiCad's public file-format
+    // documentation gives no rotation order, sign or offset frame for `offset`
+    // and `rotate`, so the numbers are written unchanged and flagged.
+    items.push(item(
+        "model.frame_unverified",
+        Severity::Approximated,
+        format!("3D model {uri}: the source's rotation order and offset frame are not documented; offset and rotation were carried over unchanged and may need checking against the model's placement"),
+        uri,
+    ));
     let rotation = xyz(node, "rotate").unwrap_or([0.0; 3]);
     Some((
         StepAttachment {

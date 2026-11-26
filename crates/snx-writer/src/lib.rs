@@ -24,7 +24,7 @@ pub mod symbol_file;
 mod text;
 
 pub use footprint_file::write_footprint_file;
-pub use manifest::{LibraryMeta, write_manifest};
+pub use manifest::{LibraryMeta, library_block_lines, write_manifest};
 pub use pcb::{FORMAT_TOKEN, GENERATOR, Written, write_board};
 pub use project::write_project;
 pub use symbol_file::write_symbol_file;

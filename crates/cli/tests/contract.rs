@@ -1418,6 +1418,27 @@ fn split_output_writes_two_libraries_and_the_parts_point_at_the_footprint_librar
         std::fs::read(fps.join("Standard Footprints.snxlib")).expect("a"),
         std::fs::read(fps2.join("Standard Footprints.snxlib")).expect("b")
     );
+    // The footprint library's id follows --library-id, so another project does not share it.
+    let other = dir.join("other-main");
+    let other_fps = dir.join("other-fps");
+    run(&[
+        "library",
+        sym.to_str().expect("utf8"),
+        pretty.to_str().expect("utf8"),
+        "--output",
+        other.to_str().expect("utf8"),
+        "--split-footprints",
+        other_fps.to_str().expect("utf8"),
+        "--name",
+        "Standard Symbols & Parts",
+        "--footprints-name",
+        "Standard Footprints",
+        "--library-id",
+        "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        "--json",
+    ]);
+    let other_lib = toml_of(other_fps.join("Standard Footprints.snxlib"));
+    assert_ne!(other_lib["library_id"].as_str(), Some(fp_id.as_str()));
     // A split library is not updated, and the two folders must be apart.
     let r = run(&[
         "library",
@@ -1440,5 +1461,248 @@ fn split_output_writes_two_libraries_and_the_parts_point_at_the_footprint_librar
         "--json",
     ]);
     assert_eq!(r.status.code(), Some(1));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A library of one symbol library "A" written by the converter, and a helper to update it.
+fn updatable(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let dir = scratch(tag);
+    let a = dir.join("A.kicad_sym");
+    std::fs::write(&a, TINY).expect("a");
+    let out_dir = dir.join("out");
+    let r = run(&[
+        "library",
+        a.to_str().expect("utf8"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--library-id",
+        "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        "--name",
+        "L",
+        "--json",
+    ]);
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    (dir, a, out_dir)
+}
+
+fn update(a: &std::path::Path, out_dir: &std::path::Path) -> std::process::Output {
+    run(&[
+        "library",
+        a.to_str().expect("utf8"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--library-id",
+        "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        "--name",
+        "L",
+        "--update",
+        "--json",
+    ])
+}
+
+#[test]
+fn an_update_keeps_what_the_user_set_in_the_manifest_byte_for_byte() {
+    let (dir, a, out_dir) = updatable("lib-manifest-keep");
+    let path = out_dir.join("L.snxlib");
+    let mut text = std::fs::read_to_string(&path).expect("m");
+    // The user's own settings, a user table with sidecars, an unknown key and a price record.
+    text = text
+        .replace("name = \"L\"\n", "name = \"L\"\ndescription = \"By hand\"\nfuture_key = 7\n")
+        .replace("mode = \"personal\"\nreview_required = false\nreviewers_required = 1", "mode = \"team\"\nreview_required = true\nreviewers_required = 2")
+        .replace("allow_self_signup = false\n", "allow_self_signup = false\n\n[users.\"ada@example.com\"]\ndisplay_name = \"Ada\"\nroles = [\"Librarian\"]\n");
+    text.push_str("\n[[classes]]\nkey = \"mine\"\nlabel = \"Mine\"\n\n[tables.Mine]\ntsv = '''\nrow_id\tinternal_pn\n00000000-0000-4000-8000-0000000000c1\tMINE-1\n'''\n\n[tables.Mine.column_types]\ninternal_pn = \"string\"\n");
+    std::fs::write(&path, &text).expect("m");
+    let r = update(&a, &out_dir);
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let after = std::fs::read_to_string(&path).expect("m");
+    for kept in [
+        "description = \"By hand\"\n",
+        "\nfuture_key = 7\n",
+        "mode = \"team\"\nreview_required = true\nreviewers_required = 2\n",
+        "[users.\"ada@example.com\"]\ndisplay_name = \"Ada\"\nroles = [\"Librarian\"]\n",
+        "[[classes]]\nkey = \"mine\"\nlabel = \"Mine\"\n",
+        "[tables.Mine]\ntsv = '''\nrow_id\tinternal_pn\n00000000-0000-4000-8000-0000000000c1\tMINE-1\n'''\n\n[tables.Mine.column_types]\ninternal_pn = \"string\"\n",
+    ] {
+        assert!(after.contains(kept), "lost {kept:?} in\n{after}");
+    }
+    // Only the converter-owned key (converted_by) was added; a second update changes nothing.
+    // (it moves up to follow `description`, where the format puts it).
+    let strip = |t: &str| t.replace("converted_by = \"signex-kicad-import 0.2.0\"\n", "");
+    assert_eq!(strip(&after), strip(&text));
+    let r = update(&a, &out_dir);
+    assert_eq!(r.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("m"),
+        after,
+        "byte-identical when nothing changed"
+    );
+    // A database library is refused.
+    std::fs::write(
+        &path,
+        after.replace("kind = \"local_git\"", "kind = \"database\""),
+    )
+    .expect("m");
+    let r = update(&a, &out_dir);
+    assert_eq!(r.status.code(), Some(1));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn an_update_never_overwrites_a_users_file_and_keeps_files_a_user_row_refers_to() {
+    let (dir, a, out_dir) = updatable("lib-untracked");
+    // The converter's envelope is a.snxsym; remove it from the ledger's view by
+    // deleting the report entry's file, then put a user file under that name.
+    let mine = out_dir.join("symbols/a.snxsym");
+    let ours = std::fs::read(&mine).expect("a");
+    let report_path = out_dir.join("import-report.json");
+    let mut report: Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).expect("r")).expect("json");
+    report["files"] = json!(
+        report["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .filter(|f| f != &&json!("symbols/a.snxsym"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    std::fs::write(&report_path, report.to_string()).expect("r");
+    std::fs::write(&mine, "the user's own symbols").expect("user file");
+    let r = update(&a, &out_dir);
+    assert!(
+        matches!(r.status.code(), Some(0 | 2)),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert_eq!(std::fs::read(&mine).expect("a"), b"the user's own symbols");
+    let alt: Vec<_> = std::fs::read_dir(out_dir.join("symbols"))
+        .expect("d")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        alt.iter()
+            .any(|n| n != "a.snxsym" && n.ends_with(".snxsym")),
+        "{alt:?}"
+    );
+    let _ = ours;
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+
+    // A user row that refers to a symbol keeps the symbol's file when the source drops it.
+    let (dir, a, out_dir) = updatable("lib-referenced");
+    let path = out_dir.join("L.snxlib");
+    let manifest = std::fs::read_to_string(&path).expect("m");
+    let start =
+        manifest.find("[tables.A]\ntsv = '''\n").expect("table") + "[tables.A]\ntsv = '''\n".len();
+    let header_end = start + manifest[start..].find('\n').expect("h") + 1;
+    let row_end = header_end + manifest[header_end..].find('\n').expect("r");
+    let mut cells: Vec<String> = manifest[header_end..row_end]
+        .split('\t')
+        .map(str::to_string)
+        .collect();
+    cells[0] = "00000000-0000-4000-8000-0000000000e1".into();
+    cells[1] = "USER-R".into();
+    let mut edited = manifest.clone();
+    edited.insert_str(header_end, &format!("{}\n", cells.join("\t")));
+    std::fs::write(&path, edited).expect("m");
+    // The source loses symbol R, so the converter would delete a.snxsym.
+    std::fs::write(
+        &a,
+        "(kicad_symbol_lib (version 20231120) (generator test))\n",
+    )
+    .expect("a");
+    let other = dir.join("B.kicad_sym");
+    std::fs::write(
+        &other,
+        TINY.replace("\"R\"", "\"S\"").replace("R_1_1", "S_1_1"),
+    )
+    .expect("b");
+    let r = run(&[
+        "library",
+        other.to_str().expect("utf8"),
+        "--output",
+        out_dir.to_str().expect("utf8"),
+        "--library-id",
+        "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        "--name",
+        "L",
+        "--update",
+        "--json",
+    ]);
+    assert!(
+        matches!(r.status.code(), Some(0 | 2)),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert!(
+        out_dir.join("symbols/a.snxsym").is_file(),
+        "kept for the user's row"
+    );
+    let codes: Vec<String> = report_of(&out_dir)["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        codes.contains(&"update.file_kept_referenced".to_string()),
+        "{codes:?}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn a_users_part_number_equal_to_a_new_rows_refuses_the_update_before_any_write() {
+    let (dir, a, out_dir) = updatable("lib-pn-clash");
+    let path = out_dir.join("L.snxlib");
+    let manifest = std::fs::read_to_string(&path).expect("m");
+    let start =
+        manifest.find("[tables.A]\ntsv = '''\n").expect("table") + "[tables.A]\ntsv = '''\n".len();
+    let header_end = start + manifest[start..].find('\n').expect("h") + 1;
+    let row_end = header_end + manifest[header_end..].find('\n').expect("r");
+    let mut cells: Vec<String> = manifest[header_end..row_end]
+        .split('\t')
+        .map(str::to_string)
+        .collect();
+    // The user's row takes the part number of a row the next import will write.
+    let new_symbol = dir.join("A2.kicad_sym");
+    let _ = new_symbol;
+    cells[0] = "00000000-0000-4000-8000-0000000000e2".into();
+    cells[1] = "A:S".into();
+    let mut edited = manifest.clone();
+    edited.insert_str(header_end, &format!("{}\n", cells.join("\t")));
+    std::fs::write(&path, &edited).expect("m");
+    std::fs::write(&a, TINY.replace("\"R\"", "\"S\"").replace("R_1_1", "S_1_1")).expect("a");
+    let before = std::fs::read(out_dir.join("symbols/a.snxsym")).expect("a");
+    let r = update(&a, &out_dir);
+    assert_eq!(
+        r.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let error = stdout_lines(&r)[0]["error"]
+        .as_str()
+        .expect("error")
+        .to_string();
+    assert!(
+        error.contains("A:S") && error.contains("00000000-0000-4000-8000-0000000000e2"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(out_dir.join("symbols/a.snxsym")).expect("a"),
+        before
+    );
+    assert_eq!(std::fs::read_to_string(&path).expect("m"), edited);
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

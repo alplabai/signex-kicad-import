@@ -24,6 +24,40 @@ pub struct LibraryMeta {
     pub requires: Vec<String>,
 }
 
+/// The converter-owned `[library]` lines after `description`: `license`,
+/// `source`, `converted_by` and `requires`, as `write_manifest` writes them.
+pub fn library_block_lines(meta: &LibraryMeta) -> Vec<String> {
+    let mut o = String::new();
+    for (key, value) in [
+        ("license", &meta.license),
+        ("source", &meta.source),
+        ("converted_by", &meta.converted_by),
+    ] {
+        if let Some(v) = value {
+            let _ = writeln!(o, "{key} = {}", toml_string(v));
+        }
+    }
+    write_requires(&mut o, &meta.requires);
+    o.lines().map(str::to_string).collect()
+}
+
+fn write_requires(o: &mut String, requires: &[String]) {
+    if requires.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = requires.iter().map(|r| toml_string(r)).collect();
+    if let [one] = ids.as_slice() {
+        let _ = writeln!(o, "requires = [{one}]");
+    } else {
+        // Two or more: one per line, as the TOML printer writes a longer array.
+        o.push_str("requires = [\n");
+        for id in &ids {
+            let _ = writeln!(o, "    {id},");
+        }
+        o.push_str("]\n");
+    }
+}
+
 pub fn write_manifest(
     library_id: &str,
     name: &str,
@@ -46,10 +80,7 @@ pub fn write_manifest(
             let _ = writeln!(o, "{key} = {}", toml_string(v));
         }
     }
-    if !meta.requires.is_empty() {
-        let ids: Vec<String> = meta.requires.iter().map(|r| toml_string(r)).collect();
-        let _ = writeln!(o, "requires = [{}]", ids.join(", "));
-    }
+    write_requires(&mut o, &meta.requires);
     o.push_str(
         "\n[mode]\nkind = \"local_git\"\n\
          \n[workflow]\nmode = \"personal\"\nreview_required = false\nreviewers_required = 1\n\

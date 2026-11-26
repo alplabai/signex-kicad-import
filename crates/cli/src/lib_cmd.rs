@@ -142,15 +142,13 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         .footprints_name
         .clone()
         .unwrap_or_else(|| format!("{name} Footprints"));
+    // Derived from the parts library's id (which `--library-id` sets), so two
+    // projects with the same name and inputs do not share it.
     let footprint_library_id = if split_dir.is_some() {
-        let mut id = derive_library_id(
-            &footprints_name,
-            &names.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        if id == library_id_main(&name, args, &names) {
-            id = derive_library_id(&format!("{footprints_name} (footprints)"), &[]);
-        }
-        id
+        uuid::Uuid::new_v5(
+            &library_id_main(&name, args, &names),
+            b"signex-kicad-import footprint library",
+        )
     } else {
         library_id_main(&name, args, &names)
     };
@@ -240,17 +238,35 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             footprint_library_name: &footprints_name,
         }),
     );
-    report.items.extend(built.items);
+    if let Some(reason) = &built.refuse {
+        // Nothing has been written yet.
+        return failed(reason.clone(), &report);
+    }
+    report.items.extend(built.items.clone());
     report.written_counts = built.written;
     report.source_counts.parts = built.candidates;
     let mut keep: Vec<String> = built.files.iter().map(|(rel, _)| rel.clone()).collect();
     keep.extend(built.protected.iter().cloned());
     // An update removes only what the earlier run wrote from libraries that
     // read cleanly this run; the rest of the folder is not touched.
-    let stale = previous
+    let mut stale = previous
         .as_ref()
         .map(|p| p.stale(&keep, &read.clean_libraries, &read.attempted_libraries))
         .unwrap_or_default();
+    // A file a row of the user's still points at stays.
+    if let Some(p) = &previous {
+        let referenced = p.referenced_files(&stale);
+        for f in &referenced {
+            report.items.push(kicad_parser::Item::new(
+                kicad_parser::ItemKind::Library,
+                f.display().to_string(),
+                "update.file_kept_referenced",
+                kicad_parser::Severity::Info,
+                "no longer produced by the source, but a part row of the user's still refers to it; kept",
+            ));
+        }
+        stale.retain(|f| !referenced.contains(f));
+    }
     report.files = match &previous {
         Some(p) => p.files_after(&keep, &stale),
         None => keep.clone(),

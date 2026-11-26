@@ -571,6 +571,25 @@ pub fn sanitize_row(row: &PartRow) -> PartRow {
     }
 }
 
+/// The header line of a part table the converter writes (22 columns).
+pub fn header_line() -> String {
+    COLUMNS.join("\t")
+}
+
+/// The row lines of a table the converter builds (22 columns): `(row_id, line)`
+/// for its rows, sanitized, and its kept rows, sorted by `row_id`.
+pub fn table_lines(table: &Table) -> Vec<(String, String)> {
+    let mut lines: Vec<(String, String)> = table
+        .rows
+        .iter()
+        .map(sanitize_row)
+        .map(|r| (r.row_id.clone(), cells(&r, false).join("\t")))
+        .collect();
+    lines.extend(table.kept.iter().cloned());
+    lines.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    lines
+}
+
 /// One `[tables.<name>]` block, rows sorted by `row_id` in byte order. Every
 /// row goes through [`sanitize_row`].
 pub fn write_table(table: &Table) -> String {

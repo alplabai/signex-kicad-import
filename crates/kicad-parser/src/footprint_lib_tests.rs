@@ -406,7 +406,13 @@ fn codes_of(items: &[Item]) -> Vec<&str> {
 #[test]
 fn a_step_model_is_embedded_with_its_hash_and_placement() {
     let (file, items) = model_fp("Good", false);
-    assert!(items.iter().all(|i| i.kind != ItemKind::Model), "{items:?}");
+    // Only the placement caveat is reported.
+    let kinds: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Model)
+        .map(|i| i.code.as_str())
+        .collect();
+    assert_eq!(kinds, ["model.frame_unverified"], "{items:?}");
     let m = &file.models[0];
     let bytes = std::fs::read(models_dir().join("Good.step")).expect("step");
     assert_eq!(&m.bytes[..], &bytes[..]);

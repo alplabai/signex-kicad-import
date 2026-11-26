@@ -299,7 +299,11 @@ impl Previous {
         }
         let name = |i: usize| parts.get(i).and_then(|n| n.to_str()).unwrap_or("");
         let shape = match parts.len() {
-            1 => name(0).ends_with(".snxlib") && name(0).len() > ".snxlib".len(),
+            1 => {
+                (name(0).ends_with(".snxlib") && name(0).len() > ".snxlib".len())
+                    || name(0) == crate::lib_notice::LICENSE_FILE
+                    || name(0) == crate::lib_notice::NOTICE_FILE
+            }
             2 => match name(0) {
                 "symbols" => name(1).ends_with(".snxsym") && name(1).len() > ".snxsym".len(),
                 "footprints" => name(1)
@@ -331,6 +335,11 @@ impl Previous {
         }
         // What the file holds must match its name and kind.
         match (parts.len(), name(0)) {
+            (1, _) if f == crate::lib_notice::LICENSE_FILE => std::fs::read_to_string(out.join(f))
+                .is_ok_and(|t| t.starts_with("This library is licensed under")),
+            (1, _) if f == crate::lib_notice::NOTICE_FILE => {
+                std::fs::read_to_string(out.join(f)).is_ok_and(|t| t.starts_with("# Notice"))
+            }
             (1, _) => self.manifests.iter().any(|m| m == f),
             (_, "symbols") => self
                 .envelopes

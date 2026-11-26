@@ -533,4 +533,17 @@ fn every_pad_and_footprint_setting_is_mapped_or_reported() {
         by_code("pad.drill_offset_ignored").severity,
         Severity::Dropped
     );
-   
+    assert_eq!(
+        by_code("pad.chamfer_approximated").severity,
+        Severity::Approximated
+    );
+    // What is carried is not reported as lost.
+    for carried in ["roundrect_rratio", "layers", "drill"] {
+        assert!(
+            !pad.detail["settings"]
+                .as_object()
+                .expect("settings")
+                .contains_key(carried)
+        );
+    }
+}

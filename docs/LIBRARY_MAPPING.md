@@ -83,6 +83,10 @@ conformance tables and hash documents). A library with no rows has no table.
 A power symbol (its own `power` flag or its ancestor's) gets a symbol and no
 row. Rows have no alternates, supply, simulation model or pin map.
 
+## Licence and notice
+
+`--license <SPDX>` and `--source <text>` (converter options, not in the contract's list) state where the library comes from; the converter never guesses. They go to the manifest's `[library]` keys `license` and `source`, next to `converted_by` (`signex-kicad-import <version>`) and, for the split output, `requires` (library ids). These four keys are optional and are not in the format spec this converter was written from (they come with the Signex change that adds them); they are written after `description`, `requires` as an inline array. `NOTICE.md` is always written: a format conversion of upstream libraries, the converter and its version, the source, the licence, the libraries and the input files with their SHA-256 (no times, so output is deterministic). With `--license CC-BY-SA-4.0` (the KiCad standard libraries, `--source https://gitlab.com/kicad/libraries/kicad-symbols@9.0.0` style) `LICENSE` holds the full legal code (https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt) and the libraries' design exception verbatim (https://www.kicad.org/libraries/license/). Another identifier is recorded, its text is not bundled (the notice says so). Without `--license` there is no `LICENSE`, no key and an info item (`library.license_unknown`). `LICENSE` and `NOTICE.md` are part of the update ledger like the other files.
+
 ## Library tables
 
 `sym-lib-table` and `fp-lib-table` (inputs by their file names) list libraries by

@@ -62,6 +62,17 @@ pub struct LibraryArgs {
     #[arg(long)]
     pub update: bool,
 
+    /// SPDX identifier of the licence the source libraries are under. Written
+    /// to the manifest; for `CC-BY-SA-4.0` the licence text and the KiCad
+    /// libraries' design exception are written to `LICENSE`.
+    #[arg(long)]
+    pub license: Option<String>,
+
+    /// Where the source libraries come from, such as `https://host/repo@tag`;
+    /// written to the manifest and `NOTICE.md`.
+    #[arg(long)]
+    pub source: Option<String>,
+
     /// Print the summary as the last stdout line.
     #[arg(long)]
     pub json: bool,

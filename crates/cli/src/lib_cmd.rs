@@ -14,8 +14,8 @@ use crate::lib_inputs::{InputKind, LibraryArgs, validate};
 use crate::lib_read::read_inputs;
 use crate::lib_report::{LibraryReport, Source, now_utc};
 use crate::lib_update::Previous;
-use crate::lib_write::UpdateCx;
 use crate::lib_write::build;
+use crate::lib_write::{Provenance, UpdateCx};
 use crate::progress::{Emitter, HEARTBEAT};
 use crate::staging::Staging;
 use kicad_parser::libids::library_id;
@@ -40,7 +40,7 @@ enum Command {
         json: bool,
     },
     /// Convert KiCad libraries into one Signex library.
-    Library(LibraryArgs),
+    Library(Box<LibraryArgs>),
 }
 
 /// Run a contract subcommand; returns the process exit code.
@@ -200,7 +200,17 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         previous: p,
         now: &started,
     });
-    let built = build(&read, library_id, &name, emitter, update_cx.as_ref());
+    let built = build(
+        &read,
+        library_id,
+        &name,
+        emitter,
+        update_cx.as_ref(),
+        Provenance {
+            license: args.license.as_deref(),
+            source: args.source.as_deref(),
+        },
+    );
     report.items.extend(built.items);
     report.written_counts = built.written;
     report.source_counts.parts = built.candidates;

@@ -12,6 +12,8 @@ use kicad_parser::parts::{Update, build_parts};
 use kicad_parser::symlib::to_snx::to_symbol_file;
 use kicad_parser::{Item, ItemKind, Severity};
 use snx_writer::{write_footprint_file, write_manifest, write_symbol_file};
+
+use crate::lib_notice;
 use uuid::Uuid;
 
 use crate::contract::Counts;
@@ -75,6 +77,13 @@ pub fn manifest_name(name: &str) -> String {
     format!("{}.snxlib", if safe.is_empty() { "library" } else { &safe })
 }
 
+/// What the user said about the source: `--license` and `--source`.
+#[derive(Clone, Copy, Default)]
+pub struct Provenance<'a> {
+    pub license: Option<&'a str>,
+    pub source: Option<&'a str>,
+}
+
 /// The state an `--update` run builds against.
 pub struct UpdateCx<'a> {
     pub previous: &'a Previous,
@@ -88,6 +97,7 @@ pub fn build(
     name: &str,
     emitter: &Emitter,
     update: Option<&UpdateCx<'_>>,
+    provenance: Provenance<'_>,
 ) -> Built {
     let mut file_libs: Vec<(String, String)> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
@@ -211,16 +221,54 @@ pub fn build(
     }
     written.parts = parts.rows;
     items.extend(parts.items);
+    if provenance.license.is_none() {
+        items.push(Item::new(
+            ItemKind::Library,
+            name,
+            "library.license_unknown",
+            Severity::Info,
+            "no --license given: the library carries no licence of its own; the source's licence applies",
+        ));
+    }
+    let mut meta = lib_notice::meta(provenance.license, provenance.source, Vec::new());
+    meta.description = None;
     files.push((
         manifest_name(name),
         write_manifest(
             &library_id.to_string(),
             name,
-            None,
+            &meta,
             &parts.classes,
             &parts.tables,
         )
         .into_bytes(),
+    ));
+    if let Some(text) = lib_notice::license_text(provenance.license) {
+        files.push((lib_notice::LICENSE_FILE.to_string(), text.into_bytes()));
+    }
+    let inputs: Vec<(String, String)> = read
+        .sources
+        .iter()
+        .map(|s| {
+            (
+                s.path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                s.sha256.clone(),
+            )
+        })
+        .collect();
+    let mut libraries: Vec<String> = read
+        .symbols
+        .iter()
+        .map(|(l, _)| l.clone())
+        .chain(read.footprint_libs.iter().cloned())
+        .collect();
+    libraries.sort();
+    libraries.dedup();
+    files.push((
+        lib_notice::NOTICE_FILE.to_string(),
+        lib_notice::notice(provenance.license, provenance.source, &inputs, &libraries).into_bytes(),
     ));
     Built {
         files,

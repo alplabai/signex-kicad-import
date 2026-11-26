@@ -338,7 +338,12 @@ fn the_manifest_head_matches_the_fixture_byte_for_byte() {
     let got = write_manifest(
         "01940000-0000-7000-8000-000000000001",
         "Conformance",
-        Some("Signex library format conformance fixture (docs/LIBRARY_FORMAT.md)."),
+        &snx_writer::LibraryMeta {
+            description: Some(
+                "Signex library format conformance fixture (docs/LIBRARY_FORMAT.md).".into(),
+            ),
+            ..Default::default()
+        },
         &[],
         &[],
     );

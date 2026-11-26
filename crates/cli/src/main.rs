@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 mod contract;
 mod lib_cmd;
 mod lib_inputs;
+mod lib_notice;
 mod lib_read;
 mod lib_report;
 mod lib_update;

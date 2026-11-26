@@ -11,10 +11,23 @@ use std::fmt::Write as _;
 use crate::canon::toml_string;
 use crate::part_table::{Class, Table, write_classes, write_table};
 
+/// The optional `[library]` keys. `license` (an SPDX identifier), `source`,
+/// `converted_by` and `requires` (library ids this library's parts refer to)
+/// are keys the format spec of this converter's time does not list yet; they
+/// are written after `description`, each only when given.
+#[derive(Debug, Clone, Default)]
+pub struct LibraryMeta {
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub source: Option<String>,
+    pub converted_by: Option<String>,
+    pub requires: Vec<String>,
+}
+
 pub fn write_manifest(
     library_id: &str,
     name: &str,
-    description: Option<&str>,
+    meta: &LibraryMeta,
     classes: &[Class],
     tables: &[Table],
 ) -> String {
@@ -23,8 +36,19 @@ pub fn write_manifest(
     let _ = writeln!(o, "library_id = {}", toml_string(library_id));
     o.push_str("\n[library]\n");
     let _ = writeln!(o, "name = {}", toml_string(name));
-    if let Some(d) = description {
-        let _ = writeln!(o, "description = {}", toml_string(d));
+    for (key, value) in [
+        ("description", &meta.description),
+        ("license", &meta.license),
+        ("source", &meta.source),
+        ("converted_by", &meta.converted_by),
+    ] {
+        if let Some(v) = value {
+            let _ = writeln!(o, "{key} = {}", toml_string(v));
+        }
+    }
+    if !meta.requires.is_empty() {
+        let ids: Vec<String> = meta.requires.iter().map(|r| toml_string(r)).collect();
+        let _ = writeln!(o, "requires = [{}]", ids.join(", "));
     }
     o.push_str(
         "\n[mode]\nkind = \"local_git\"\n\

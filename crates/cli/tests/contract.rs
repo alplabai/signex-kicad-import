@@ -100,7 +100,7 @@ fn library_writes_the_files_and_summarises_them() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(files.len(), 2, "{files:?}");
+    assert_eq!(files.len(), 3, "{files:?}");
     assert!(out_dir.join("symbols/tiny.snxsym").is_file());
     assert!(out_dir.join("Tiny.snxlib").is_file());
     // No staging folder is left beside the output.
@@ -1219,5 +1219,121 @@ fn models_are_embedded_with_models_dir_and_left_out_with_skip() {
         .filter_map(|i| i["code"].as_str().map(str::to_string))
         .collect();
     assert!(codes.contains(&"model.skipped".to_string()));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn license_source_and_notice_are_written_and_a_missing_license_is_said() {
+    let dir = scratch("lib-license");
+    let sym = write_sym(&dir);
+    let sym = sym.to_str().expect("utf8");
+    let out_dir = dir.join("out");
+    let out = out_dir.to_str().expect("utf8");
+    let r = run(&[
+        "library",
+        sym,
+        "--output",
+        out,
+        "--json",
+        "--license",
+        "CC-BY-SA-4.0",
+        "--source",
+        "https://example.com/libs@9.0.0",
+    ]);
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(out_dir.join("Tiny.snxlib")).expect("m"))
+            .expect("toml");
+    let lib = &manifest["library"];
+    assert_eq!(lib["license"].as_str(), Some("CC-BY-SA-4.0"));
+    assert_eq!(
+        lib["source"].as_str(),
+        Some("https://example.com/libs@9.0.0")
+    );
+    assert!(
+        lib["converted_by"]
+            .as_str()
+            .expect("converted_by")
+            .starts_with("signex-kicad-import ")
+    );
+    let license = std::fs::read_to_string(out_dir.join("LICENSE")).expect("LICENSE");
+    assert!(
+        license.contains("waives article 3")
+            && license.contains("Attribution-ShareAlike 4.0 International")
+    );
+    let notice = std::fs::read_to_string(out_dir.join("NOTICE.md")).expect("NOTICE");
+    assert!(
+        notice.contains("format conversion")
+            && notice.contains("libs@9.0.0")
+            && notice.contains("Tiny.kicad_sym")
+    );
+    let summary = &stdout_lines(&r)[0];
+    assert!(summary["files"].as_array().expect("files").len() >= 4);
+    // An update rewrites them in place and keeps the bytes.
+    let before = std::fs::read(out_dir.join("LICENSE")).expect("l");
+    let r = run(&[
+        "library",
+        sym,
+        "--output",
+        out,
+        "--json",
+        "--license",
+        "CC-BY-SA-4.0",
+        "--source",
+        "https://example.com/libs@9.0.0",
+        "--update",
+    ]);
+    assert_eq!(
+        r.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert_eq!(std::fs::read(out_dir.join("LICENSE")).expect("l"), before);
+
+    // Without --license: no LICENSE file, no key, an info item.
+    let out2 = dir.join("none");
+    let r = run(&[
+        "library",
+        sym,
+        "--output",
+        out2.to_str().expect("utf8"),
+        "--json",
+    ]);
+    assert_eq!(r.status.code(), Some(0));
+    assert!(!out2.join("LICENSE").exists() && out2.join("NOTICE.md").is_file());
+    let manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(out2.join("Tiny.snxlib")).expect("m"))
+            .expect("toml");
+    assert!(manifest["library"].get("license").is_none());
+    let codes: Vec<String> = report_of(&out2)["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["code"].as_str().map(str::to_string))
+        .collect();
+    assert!(codes.contains(&"library.license_unknown".to_string()));
+    // Another licence is recorded; its text is not invented.
+    let out3 = dir.join("mit");
+    run(&[
+        "library",
+        sym,
+        "--output",
+        out3.to_str().expect("utf8"),
+        "--json",
+        "--license",
+        "MIT",
+    ]);
+    assert!(!out3.join("LICENSE").exists());
+    assert!(
+        std::fs::read_to_string(out3.join("NOTICE.md"))
+            .expect("n")
+            .contains("no text for this licence")
+    );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

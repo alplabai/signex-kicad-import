@@ -910,4 +910,22 @@ fn chain(segments: &[([f64; 2], [f64; 2])]) -> Option<Vec<[f64; 2]>> {
     for _ in 1..segments.len() {
         let next = segments.iter().enumerate().find_map(|(i, &(a, b))| {
             if used[i] {
-               
+                None
+            } else if near(a, at) {
+                Some((i, b))
+            } else if near(b, at) {
+                Some((i, a))
+            } else {
+                None
+            }
+        })?;
+        used[next.0] = true;
+        ring.push(at);
+        at = next.1;
+    }
+    (near(at, ring[0]) && ring.len() >= 3).then_some(ring)
+}
+
+#[cfg(test)]
+#[path = "footprint_lib_tests.rs"]
+mod tests;

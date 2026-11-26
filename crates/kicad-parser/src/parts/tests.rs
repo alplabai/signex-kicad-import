@@ -222,8 +222,13 @@ fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
         &HashSet::new(),
         &Update::default(),
     );
-    let manifest =
-        snx_writer::write_manifest(&lib_id().to_string(), "n", None, &p.classes, &p.tables);
+    let manifest = snx_writer::write_manifest(
+        &lib_id().to_string(),
+        "n",
+        &Default::default(),
+        &p.classes,
+        &p.tables,
+    );
     let value: toml::Value = toml::from_str(&manifest).expect("the manifest is valid TOML");
     let (name, table) = value["tables"]
         .as_table()
@@ -246,8 +251,13 @@ fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
 #[test]
 fn build_parts_gives_a_table_whose_rows_are_what_the_symbols_say() {
     let p = build();
-    let manifest =
-        snx_writer::write_manifest(&lib_id().to_string(), "n", None, &p.classes, &p.tables);
+    let manifest = snx_writer::write_manifest(
+        &lib_id().to_string(),
+        "n",
+        &Default::default(),
+        &p.classes,
+        &p.tables,
+    );
     let value: toml::Value = toml::from_str(&manifest).expect("valid TOML");
     let tsv = value["tables"]["parts"]["tsv"].as_str().expect("tsv");
     let lines: Vec<Vec<&str>> = tsv.lines().map(|l| l.split('\t').collect()).collect();

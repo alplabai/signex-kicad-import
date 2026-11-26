@@ -157,10 +157,16 @@ pub fn sha256_of(path: &Path) -> Result<String> {
 
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
             collect_files(&path, out)?;
-        } else {
+        } else if kind.is_file()
+            || (kind.is_symlink() && path.metadata().is_ok_and(|m| m.is_file()))
+        {
+            // A link to a file counts as that file; a link to a folder is
+            // not followed, so a link loop cannot recurse.
             out.push(path);
         }
     }
@@ -204,6 +210,18 @@ mod tests {
         assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(format_utc(1_000_000_000), "2001-09-09T01:46:40Z");
         assert_eq!(format_utc(1_709_164_800), "2024-02-29T00:00:00Z");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_loop_in_a_folder_does_not_recurse() {
+        let dir = std::env::temp_dir().join(format!("snx-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("a.txt"), "a").expect("file");
+        std::os::unix::fs::symlink(&dir, dir.join("loop")).expect("link");
+        assert!(sha256_of(&dir).is_ok());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]

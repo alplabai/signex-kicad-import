@@ -4,8 +4,8 @@
 in-memory model. It was written without reading KiCad's source code. Each
 format fact below names where it comes from: the public file-format
 documentation (D), the KiCad manual (M), or observation of library files
-themselves (O), which is how a file's author-visible tokens can be seen without
-any program source.
+themselves (O), cited by repository and file with the file's `version` and
+`generator` line; the files are public repositories read as data only.
 
 D = <https://dev-docs.kicad.org/en/file-formats/sexpr-symbol-lib/> and
 <https://dev-docs.kicad.org/en/file-formats/sexpr-intro/> (sections Symbols,
@@ -23,13 +23,13 @@ Fill Definition). Last modified 2025-02-20 on the page read.
 | Graphic items: arc (start mid end), circle (center radius), bezier (4 points), polyline (pts), rectangle (start end), text; each with stroke and fill (`none`, `outline`, `background`) | D |
 | Pin: `(pin TYPE STYLE (at X Y A) (length L) (name "N" EFFECTS) (number "N" EFFECTS))`; angles 0, 90, 180, 270; the 12 electrical types and 9 graphic styles listed in `model.rs` | D |
 | `(unit_name "...")` inside a unit child | D |
-| `(power)` marks a power symbol; newer files write `(power global)` or `(power local)` | O |
-| `(exclude_from_sim yes\|no)` | O |
-| `(alternate "NAME" TYPE STYLE)` inside a pin: another function of the pin | O |
-| A hidden pin or property: a bare `hide` in older files, `(hide yes)` in newer ones; a text can also be hidden in `(effects ... hide)` | O |
-| `(fill (type color) (color R G B A))`; `(stroke ... (color R G B A))` | O |
-| Property `Description` (newer files) beside the reserved `ki_description` | O |
-| `.kicad_symdir`: a folder of per-symbol files; the reader assumes each is a `*.kicad_sym` holding one symbol, either inside `(kicad_symbol_lib ...)` or as a bare `(symbol ...)`. `extends` may name a symbol in another file of the folder. The folder layout is **not** in the pages read above; this is an assumption to confirm against real v10 folders | assumption |
+| `(power)` marks a power symbol. Seen bare in `greatscottgadgets/cynthion-hardware` `libraries/support_hardware.kicad_sym` (version 20211014, generator `kicad_symbol_editor`) and with a `global` word in the symbols embedded in `OpenDrone-hw/OpenFC-Lite-Mini` `hardware/power.kicad_sch` (version 20260306, generator `eeschema` 10.0). `(power local)` was not observed; it is read the same way as an assumption | O |
+| `(exclude_from_sim yes\|no)`: seen in `EEVengers/ThunderScope` `Thunderscope_Rev5.kicad_sym` (version 20241209, generator `kicad_symbol_editor` 9.0) and `apfaudio/soldiercrab` `libraries/micromod.kicad_sym` (20231120, 8.0) | O |
+| `(alternate "NAME" TYPE STYLE)` inside a pin: another function of the pin. No standalone `.kicad_sym` of the corpus used had one; seen in the symbols embedded in `tzarc/keyboards` `Kobold/R1/Kobold.kicad_sch` (version 20250114, generator `eeschema` 9.0), which use the same symbol syntax | O |
+| A hidden pin or property: a bare `hide` in older files (`cynthion-hardware` `libraries/usb.kicad_sym`, version 20220914, generator `kicad_symbol_editor`), `(hide yes)` in newer ones (`daniestevez/ADF4158_PCB` `ADF4158_PCB_library.kicad_sym`, 20241209, 9.0); a text can also be hidden in `(effects ... hide)` | O |
+| `(fill (type color) (color R G B A))`: seen in `Thunderscope_Rev5.kicad_sym` (20241209, 9.0); `(stroke ... (color R G B A))` is written the same way | O |
+| Property `Description` (`ADF4158_PCB_library.kicad_sym`, 20241209) beside the reserved `ki_description` (`skot/bitaxe` `bitaxe.kicad_sym`, 20220914) | O |
+| `.kicad_symdir`: a folder of per-symbol files; the reader assumes each is a `*.kicad_sym` holding one symbol, either inside `(kicad_symbol_lib ...)` or as a bare `(symbol ...)`. `extends` may name a symbol in another file of the folder. The folder layout is **not** in the pages read above; this is an assumption to confirm against real v10 folders; no `.kicad_symdir` was available to observe | assumption |
 
 Coordinates are millimetres with the file's axes (y up in a symbol file); the
 reader converts nothing.
@@ -53,6 +53,7 @@ not write) are kept as unit 0, style 0.
 | `symlib.unreadable` | error | an input file does not parse (CLI; library item) |
 | `symlib.file_unreadable` | error | a file of a `.kicad_symdir` does not parse |
 | `symlib.file_ignored` | info | a file of a `.kicad_symdir` that is not `*.kicad_sym` |
+| `symlib.invalid_utf8` | info | the file is not valid UTF-8; bytes replaced by U+FFFD |
 | `symlib.token_unknown` | info | an unknown token directly in the library |
 | `symbol.token_unknown` | info | an unknown token directly in a symbol |
 | `symbol.unit_token_unknown` | info | an unknown token (for example `text_box`) in a unit |

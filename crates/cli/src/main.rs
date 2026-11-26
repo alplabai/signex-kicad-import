@@ -18,6 +18,7 @@ mod lib_inputs;
 mod lib_read;
 mod lib_report;
 mod progress;
+mod staging;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;

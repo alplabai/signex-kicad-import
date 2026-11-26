@@ -340,3 +340,22 @@ fn a_symbol_with_no_units_and_no_extends_is_empty_not_broken() {
     assert_eq!(read.lib.effective_units(s), Some(&[][..]));
     assert!(read.items.is_empty());
 }
+
+#[test]
+fn bytes_that_are_not_utf8_are_replaced_and_reported() {
+    let path = std::env::temp_dir().join(format!("snx-utf8-{}.kicad_sym", std::process::id()));
+    let mut bytes = b"(kicad_symbol_lib (symbol \"A".to_vec();
+    bytes.extend([0xff, 0xfe]);
+    bytes.extend(b"\"))");
+    std::fs::write(&path, bytes).expect("file");
+    let read = read_symbol_file(&path).expect("reads");
+    std::fs::remove_file(&path).expect("cleanup");
+    assert_eq!(read.lib.symbols.len(), 1);
+    assert!(read.lib.symbols[0].name.contains('\u{fffd}'));
+    let item = read
+        .items
+        .iter()
+        .find(|i| i.code == "symlib.invalid_utf8")
+        .expect("item");
+    assert_eq!(item.severity, Severity::Info);
+}

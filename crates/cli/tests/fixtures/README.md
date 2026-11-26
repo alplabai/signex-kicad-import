@@ -2,7 +2,7 @@
 
 - `library-converter-v1.json`: the library converter contract's JSON Schema,
   copied unchanged from the Signex repository, `docs/schemas/library-converter-v1.json`
-  at signex e906ecc58 (a public document). The tests validate the converter's
+  at signex 440d98329 (a public document; whether this copy may live here is for the maintainer to confirm). The tests validate the converter's
   output against it; refresh the copy when the contract's minor version moves.
 - `legacy-help.txt`, `legacy-v7-summary.json`: the board conversion's `--help`
   and `--json` output, captured from this repository's last commit before the

@@ -41,6 +41,44 @@ pub fn read_symbol_lib(text: &str, library: &str) -> Result<SymbolLibRead, Parse
     Ok(read)
 }
 
+/// Read a `.kicad_sym` file. Bytes that are not UTF-8 are replaced by U+FFFD
+/// and reported once (`symlib.invalid_utf8`, info).
+pub fn read_symbol_file(path: &Path) -> Result<SymbolLibRead, ParseError> {
+    let library = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("symbols")
+        .to_string();
+    let mut read = SymbolLibRead::default();
+    read_file_into(path, &library, &mut read)?;
+    finish(&mut read, &library);
+    Ok(read)
+}
+
+fn read_file_into(path: &Path, library: &str, read: &mut SymbolLibRead) -> Result<(), ParseError> {
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    if matches!(text, std::borrow::Cow::Owned(_)) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let mut sink = Sink {
+            library,
+            items: &mut read.items,
+        };
+        sink.add(
+            "",
+            "symlib.invalid_utf8",
+            Severity::Info,
+            format!("{name} is not valid UTF-8; unreadable bytes replaced"),
+            json!({ "file": name }),
+        );
+    }
+    read_into(&text, library, read)
+}
+
 /// Read a `.kicad_symdir` folder: every `*.kicad_sym` file in it, by file
 /// name, joined into one library. A file that does not read is a report item
 /// (`symlib.file_unreadable`, error); other files are ignored with an `info`.
@@ -79,9 +117,7 @@ pub fn read_symbol_dir(dir: &Path) -> Result<SymbolLibRead, ParseError> {
             );
             continue;
         }
-        let result = std::fs::read(&path)
-            .map_err(ParseError::from)
-            .and_then(|bytes| read_into(&String::from_utf8_lossy(&bytes), &library, &mut read));
+        let result = read_file_into(&path, &library, &mut read);
         if let Err(e) = result {
             let mut sink = Sink {
                 library: &library,

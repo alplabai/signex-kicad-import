@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use kicad_parser::symlib::{SymbolLibRead, read_symbol_dir, read_symbol_lib};
+use kicad_parser::symlib::{SymbolLibRead, read_symbol_dir, read_symbol_file};
 use kicad_parser::{Item, ItemKind, Severity};
 use serde_json::json;
 
@@ -46,12 +46,7 @@ pub fn read_inputs(inputs: &[(PathBuf, InputKind)], emitter: &Emitter) -> Result
             .file_stem()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let result = match kind {
-            InputKind::SymbolFile => Some(std::fs::read(path).map_err(|e| e.to_string()).and_then(
-                |bytes| {
-                    read_symbol_lib(&String::from_utf8_lossy(&bytes), &lib_name)
-                        .map_err(|e| e.to_string())
-                },
-            )),
+            InputKind::SymbolFile => Some(read_symbol_file(path).map_err(|e| e.to_string())),
             InputKind::SymbolDir => Some(read_symbol_dir(path).map_err(|e| e.to_string())),
             _ => None,
         };

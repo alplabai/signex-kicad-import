@@ -74,7 +74,19 @@ fn run_library(args: &LibraryArgs) -> i32 {
     } else {
         Emitter::off()
     };
-    let outcome = library(args, &emitter);
+    // A panic is a failed run (exit 1) with a summary, never a bare abort;
+    // the staging folder is dropped while unwinding, and `finish` below stops
+    // the heartbeat either way.
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| library(args, &emitter)))
+            .unwrap_or_else(|payload| {
+                let what = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                Outcome::failed(format!("internal error: {what}"))
+            });
     if let Some(error) = &outcome.error {
         eprintln!("error: {error}");
     }
@@ -112,13 +124,27 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         Ok(p) => p,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
+    test_panic("write");
     Outcome {
         exit: Exit::Failed,
         error: Some("library output not implemented yet".to_string()),
-        library: Some(out),
+        // Nothing of the library was written; the report stays for inspection.
+        library: None,
         report: Some(report_path),
         files: Vec::new(),
         written: Counts::default(),
         items: report.items,
     }
 }
+
+/// Debug builds only: panic at the named point when
+/// `SIGNEX_KICAD_IMPORT_TEST_PANIC` names it (the tests of the failure path).
+#[cfg(debug_assertions)]
+pub fn test_panic(point: &str) {
+    if std::env::var("SIGNEX_KICAD_IMPORT_TEST_PANIC").is_ok_and(|v| v == point) {
+        panic!("test panic at {point}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub fn test_panic(_point: &str) {}

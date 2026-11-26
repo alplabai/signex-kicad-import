@@ -17,11 +17,7 @@ Prints the contract's `describe` document and exits 0:
 | KiCad library tables | `sym-lib-table`, `fp-lib-table` | `library` |
 
 A library table has no extension, so its **full file name** is the entry in
-`extensions`. The contract schema's extension pattern is `^[a-z0-9_]+$`, which
-does not admit the hyphens in those two names; they are the only entries that
-deviate from the schema. (A schema revision should allow `-`, or give tables a
-separate field.) The test `describe_matches_the_schema_but_for_the_two_table_names`
-pins exactly this deviation.
+`extensions` (the contract allows fixed names of source files).
 
 ## `library <input>... --output <dir>`
 
@@ -75,3 +71,11 @@ byte-identical), to a stable `<area>.<what>` code and a severity; see
 `REPORT_CODES.md`. A message the catalogue does not know is
 `board.unclassified` / `approximated` with the text in `detail`; a test fails
 when a message written in the sources is missing from the catalogue.
+
+## Failure and cleanup
+
+A panic is a failed run: exit 1 and a summary `internal error: ...`. Library
+files are written to a staging folder (`.<output>.tmp-import` beside
+`--output`) and moved in only on success, so a failed run leaves none, and a
+library that existed before `--update` stays as it was. `import-report.*` stays
+once the sources were read. A failed summary has `library: null`.

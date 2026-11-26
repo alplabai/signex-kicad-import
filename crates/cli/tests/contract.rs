@@ -21,21 +21,13 @@ fn write_sym(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn describe_matches_the_schema_but_for_the_two_table_names() {
+fn describe_matches_the_schema() {
     let out = run(&["describe", "--json"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stderr.is_empty());
     let value: Value = serde_json::from_slice(&out.stdout).expect("one JSON document");
     let errors = validate(&schema(), "#/$defs/describe", &value);
-    // The schema's extension pattern `^[a-z0-9_]+$` has no room for a hyphen,
-    // and a library table has no extension, only the names `sym-lib-table`
-    // and `fp-lib-table` (docs/LIBRARY_CONVERTER.md). Those two entries are
-    // the only deviation; anything else is a bug.
-    let expected = [
-        "$.inputs[3].extensions[0]: \"sym-lib-table\" does not match ^[a-z0-9_]+$",
-        "$.inputs[3].extensions[1]: \"fp-lib-table\" does not match ^[a-z0-9_]+$",
-    ];
-    assert_eq!(errors, expected, "{errors:#?}");
+    assert!(errors.is_empty(), "{errors:#?}");
     assert_eq!(value["contract"], "1.0");
     assert_eq!(value["converter"], "signex-kicad-import");
     let exts: Vec<&str> = value["inputs"]
@@ -92,6 +84,8 @@ fn library_reads_then_exits_one_with_a_summary_and_reports() {
     assert_eq!(summary["ok"], false);
     assert_eq!(summary["exit"], "failed");
     assert_eq!(summary["error"], "library output not implemented yet");
+    // Nothing of the library was written, so no library path.
+    assert_eq!(summary["library"], Value::Null);
     let report_path = summary["report"].as_str().expect("report path");
     assert!(report_path.ends_with("import-report.json"));
     let report: Value =
@@ -339,5 +333,40 @@ fn an_unreadable_symbol_file_is_an_item_not_a_failed_run() {
     assert_eq!(report["items"][0]["severity"], "error");
     assert_eq!(report["items"][0]["kind"], "library");
     assert_eq!(report["counts"]["source"]["symbols"], 0);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_is_a_failed_run_that_keeps_the_report() {
+    let dir = scratch("lib-panic");
+    let sym = write_sym(&dir);
+    let out_dir = dir.join("out");
+    let out = common::bin()
+        .env("SIGNEX_KICAD_IMPORT_TEST_PANIC", "write")
+        .args([
+            "library",
+            sym.to_str().expect("utf8"),
+            "--output",
+            out_dir.to_str().expect("utf8"),
+            "--progress",
+        ])
+        .output()
+        .expect("runs");
+    assert_eq!(out.status.code(), Some(1));
+    let lines = stdout_lines(&out);
+    let summary = lines.last().expect("lines");
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["ok"], false);
+    assert!(
+        summary["error"]
+            .as_str()
+            .expect("error")
+            .starts_with("internal error: test panic at write")
+    );
+    assert!(validate(&schema(), "#/$defs/summary", summary).is_empty());
+    // The run read its source, so the report stays; no library file does.
+    assert!(out_dir.join("import-report.json").is_file());
+    assert!(!out_dir.join("symbols").exists());
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }

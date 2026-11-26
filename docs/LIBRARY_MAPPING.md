@@ -119,7 +119,7 @@ degrees is 270 in the file).
 | pad layers | the named sets of 4.2 in order: `Top Layer`, `Bottom Layer`, `Top Solder`, `Bottom Solder`, `Top Paste`, `Bottom Paste` (a pad that lacks paste lacks the token); a non-plated hole keeps mask layers only (`pad.npth_copper_dropped`) |
 | shapes | `round`, `rect`, `oval`, `round_rect:<ratio>`, `trapezoid:<dx>,<dy>`, `custom:...` (chamfered corners stay the board converter's rounded corners) |
 | `solder_mask_margin`, `solder_paste_margin` (pad, else the footprint's) | the pad's base margin columns; a paste ratio (pad or footprint) has no field (`pad.paste_ratio_not_carried`) |
-| `(drill oval DIAMETER WIDTH)` | `drill_diameter` = the smaller, `drill_slot_length` = the larger; the format does not say which way a slot lies, it is taken along the pad's x axis, so a slot longer in y is approximated (`pad.slot_orientation_approximated`) |
+| `(drill oval DIAMETER WIDTH)` | `drill_diameter` = the smaller, `drill_slot_length` = the larger; the slot lies along the pad's x axis; one longer in y on a round, rect, oval or roundrect pad is made exact by swapping the pad size and adding 90 degrees to its rotation, on a trapezoid or custom pad it is approximated (`pad.slot_orientation_approximated`). Signex cannot place slotted drills on boards yet, so every footprint with a slot gets `pad.slot_not_placeable` (approximated); the slot is still written exactly |
 | footprint on `B.Cu` | refused (error): turning a flipped footprint back needs the mirrored pad and text turns, which the format's frame rules do not pin down for a standalone file |
 | fp_line / fp_rect / fp_circle / fp_arc / fp_poly / fp_text on silk, fab | `silk_f`, `silk_b`, `fab_f`, `fab_b` (line, rectangle, circle, arc, polygon, text); an arc runs from +x toward +y as the format says; text rotation not carried |
 | courtyard drawings | `courtyard`: a polygon or rectangle as is, four-plus lines chained into the ring, else the bounding box (approximated) |
@@ -152,7 +152,7 @@ Symbol reader codes are in `KICAD_SYMBOL_FORMAT.md`; board message codes in
 | `footprint.file_ignored` | info | |
 | `footprint.invalid_utf8` | approximated | bytes replaced |
 | `footprint.zone_dropped`, `footprint.graphic_layer_dropped`, `footprint.graphic_unreadable`, `pad.layer_dropped` | dropped | |
-| `pad.paste_ratio_not_carried`, `pad.property_not_carried`, `pad.slot_orientation_approximated`, `footprint.courtyard_approximated`, `footprint.tags_in_description`, `footprint.attr_not_carried`, `footprint.text_rotation_dropped`, `pad.npth_copper_dropped`, `pad.text_sanitized` | approximated | |
+| `pad.paste_ratio_not_carried`, `pad.property_not_carried`, `pad.slot_orientation_approximated`, `pad.slot_not_placeable`, `footprint.courtyard_approximated`, `footprint.tags_in_description`, `footprint.attr_not_carried`, `footprint.text_rotation_dropped`, `pad.npth_copper_dropped`, `pad.text_sanitized` | approximated | |
 | `model.deferred` | info | 3D model not converted yet |
 | `part.written` | info | the row was written; `id` is its `row_id` |
 | `part.footprint_missing` | error | the named footprint was not converted; row skipped |

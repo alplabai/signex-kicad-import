@@ -298,7 +298,10 @@ fn an_oval_drill_is_a_slot_of_the_larger_size() {
     let (file, items) = special("Slot_Test.kicad_mod");
     let pads = file.expect("converts").footprint.pads;
     assert_eq!((pads[0].drill, pads[0].slot_length), (Some(0.8), Some(1.6)));
+    assert_eq!((pads[0].size, pads[0].rotation), ([2.5, 1.5], 0.0));
+    // A slot longer in y: the pad is swapped and turned a quarter, exactly.
     assert_eq!((pads[1].drill, pads[1].slot_length), (Some(0.8), Some(1.6)));
+    assert_eq!((pads[1].size, pads[1].rotation), ([1.5, 2.5], 90.0));
     // Equal sizes are a round hole.
     assert_eq!((pads[2].drill, pads[2].slot_length), (Some(0.8), None));
     // Only the slot lying along y is reported, once.

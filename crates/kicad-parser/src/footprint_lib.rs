@@ -341,6 +341,13 @@ impl Sink<'_> {
         }
     }
 
+    /// Like `note`, but one item per footprint however many pads.
+    fn note_once(&mut self, code: &'static str, severity: Severity, message: &'static str) {
+        if !self.counts.iter().any(|c| c.0 == code) {
+            self.counts.push((code, severity, message, 1));
+        }
+    }
+
     fn flush(&mut self, source: &str) {
         for (code, severity, message, count) in self.counts.drain(..) {
             self.items.push(
@@ -555,17 +562,29 @@ fn pad(p: &BoardPad, margins: Margins, sink: &mut Sink<'_>) -> Option<out::Pad> 
         pad_layers(p, sink)
     };
     // `(drill oval DIAMETER WIDTH)`: the smaller size is the hole's diameter,
-    // the larger the slot length. The format does not say which way a slot
-    // lies; it is taken along the pad's x axis, so a slot longer in y is
-    // reported.
+    // the larger the slot length. A slot lies along the pad's x axis here; one
+    // longer in y is made exact for the plain shapes by swapping the pad's
+    // size and turning it a quarter (the slot and the copper turn together).
+    let mut size = p2(p.size);
+    let mut rotation = p.rotation;
     let (drill, slot_length) = match (p.drill_slot, p.drill) {
         (Some(s), Some(_)) => {
+            sink.note_once(
+                "pad.slot_not_placeable",
+                Severity::Approximated,
+                "Signex cannot place slotted drills on boards yet; the slot is written exactly",
+            );
             if s.y > s.x {
-                sink.note(
-                    "pad.slot_orientation_approximated",
-                    Severity::Approximated,
-                    "slot drill longer in y written with its length along the pad's x axis",
-                );
+                if matches!(p.shape, PadShape::Circle | PadShape::Rect | PadShape::Oval | PadShape::RoundRect(_)) {
+                    size = [size[1], size[0]];
+                    rotation = (rotation + 90.0).rem_euclid(360.0);
+                } else {
+                    sink.note(
+                        "pad.slot_orientation_approximated",
+                        Severity::Approximated,
+                        "slot drill longer in y on a trapezoid or custom pad written with its length along the pad's x axis",
+                    );
+                }
             }
             (Some(s.x.min(s.y)), Some(s.x.max(s.y)))
         }
@@ -575,9 +594,9 @@ fn pad(p: &BoardPad, margins: Margins, sink: &mut Sink<'_>) -> Option<out::Pad> 
         number: text,
         kind: kind.to_string(),
         shape: shape_token(&p.shape),
-        size: p2(p.size),
+        size,
         pos: p2(p.position),
-        rotation: p.rotation,
+        rotation,
         layers,
         drill,
         slot_length,

@@ -77,14 +77,12 @@ impl Staging {
         let result = self.apply(stale, &backup, &mut placed, &mut saved);
         if result.is_err() {
             for p in &placed {
-                let _ = std::fs::remove_file(p);
+                if let Ok(rel) = p.strip_prefix(&self.out) {
+                    let _ = remove_file_at(&self.out, rel);
+                }
             }
             for rel in &saved {
-                let target = self.out.join(rel);
-                if create_parents_checked(&self.out, rel).is_ok() && no_links_below(&self.out, rel)
-                {
-                    let _ = std::fs::rename(backup.join(rel), target);
-                }
+                let _ = move_file(&backup, rel, &self.out, rel);
             }
         }
         result.map(|()| placed)
@@ -105,17 +103,11 @@ impl Staging {
             if !plain_relative(rel) {
                 anyhow::bail!("refusing the path {}", rel.display());
             }
-            let target = self.out.join(rel);
-            if !no_links_below(&self.out, rel) {
-                anyhow::bail!("{} lies behind a link; not moved", target.display());
-            }
             // Only a regular file is moved; a link, a folder or nothing is left alone.
-            match std::fs::symlink_metadata(&target) {
-                Ok(m) if m.is_file() => {}
-                _ => return Ok(()),
+            if !is_regular(&self.out, rel) {
+                return Ok(());
             }
-            let to = backup.join(rel);
-            create_parents_checked(backup, rel)?;
+            std::fs::create_dir_all(backup)?;
             // Written before the move, so a crash can always find what was moved.
             {
                 use std::io::Write as _;
@@ -126,8 +118,8 @@ impl Staging {
                 writeln!(m, "{}", rel.display())?;
                 m.sync_all()?;
             }
-            std::fs::rename(&target, &to)
-                .with_context(|| format!("backing up {}", target.display()))?;
+            move_file(&self.out, rel, backup, rel)
+                .with_context(|| format!("backing up {}", self.out.join(rel).display()))?;
             saved.push(rel.to_path_buf());
             Ok(())
         };
@@ -137,11 +129,7 @@ impl Staging {
         for rel in &self.files {
             save(rel, saved)?;
             let target = self.out.join(rel);
-            create_parents_checked(&self.out, rel)?;
-            if !no_links_below(&self.out, rel) {
-                anyhow::bail!("{} lies behind a link; not written", target.display());
-            }
-            std::fs::rename(self.dir.join(rel), &target)
+            move_file(&self.dir, rel, &self.out, rel)
                 .with_context(|| format!("placing {}", target.display()))?;
             placed.push(target);
         }
@@ -150,6 +138,108 @@ impl Staging {
 }
 
 const MANIFEST: &str = "MANIFEST";
+
+/// Whether `root/rel` is a regular file, found without following a link in
+/// any component.
+#[cfg(unix)]
+fn is_regular(root: &Path, rel: &Path) -> bool {
+    use rustix::fs::{AtFlags, FileType, statat};
+    let Some((dir, name)) = unix::parent_fd(root, rel, false).ok().flatten() else {
+        return false;
+    };
+    statat(&dir, &name, AtFlags::SYMLINK_NOFOLLOW)
+        .is_ok_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::RegularFile)
+}
+
+/// Move `src_root/src_rel` to `dst_root/dst_rel`, creating the folders below
+/// `dst_root`. Every component is opened from the folder before it with
+/// `O_NOFOLLOW`, and the move is a `renameat` between those folder handles, so
+/// a link put in the way after a check cannot redirect it.
+#[cfg(unix)]
+fn move_file(src_root: &Path, src_rel: &Path, dst_root: &Path, dst_rel: &Path) -> Result<()> {
+    let (sdir, sname) = unix::parent_fd(src_root, src_rel, false)?.context("no such folder")?;
+    let (ddir, dname) = unix::parent_fd(dst_root, dst_rel, true)?.context("no folder")?;
+    rustix::fs::renameat(&sdir, &sname, &ddir, &dname).map_err(std::io::Error::from)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_file_at(root: &Path, rel: &Path) -> Result<()> {
+    let (dir, name) = unix::parent_fd(root, rel, false)?.context("no such folder")?;
+    rustix::fs::unlinkat(&dir, &name, rustix::fs::AtFlags::empty())
+        .map_err(std::io::Error::from)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::ffi::OsString;
+    use std::os::fd::OwnedFd;
+    use std::path::Path;
+
+    use anyhow::Result;
+    use rustix::fs::{Mode, OFlags, mkdirat, openat};
+    use rustix::io::Errno;
+
+    /// The folder holding `rel` below `root` as a handle, and `rel`'s file name.
+    /// With `create`, missing folders are made; a component that is a link or
+    /// not a folder is an error either way (`None` when a folder is missing).
+    pub fn parent_fd(root: &Path, rel: &Path, create: bool) -> Result<Option<(OwnedFd, OsString)>> {
+        let flags = OFlags::DIRECTORY | OFlags::RDONLY | OFlags::CLOEXEC;
+        let mut cur = rustix::fs::open(root, flags, Mode::empty()).map_err(std::io::Error::from)?;
+        let comps: Vec<_> = rel.components().collect();
+        let Some((last, dirs)) = comps.split_last() else {
+            return Ok(None);
+        };
+        for c in dirs {
+            let name = c.as_os_str();
+            cur = match openat(&cur, name, flags | OFlags::NOFOLLOW, Mode::empty()) {
+                Ok(fd) => fd,
+                Err(Errno::NOENT) if create => {
+                    mkdirat(
+                        &cur,
+                        name,
+                        Mode::RWXU | Mode::RGRP | Mode::XGRP | Mode::ROTH | Mode::XOTH,
+                    )
+                    .map_err(std::io::Error::from)?;
+                    openat(&cur, name, flags | OFlags::NOFOLLOW, Mode::empty())
+                        .map_err(std::io::Error::from)?
+                }
+                Err(Errno::NOENT) => return Ok(None),
+                Err(e) => anyhow::bail!(
+                    "{} is a link or not a folder: {}",
+                    name.to_string_lossy(),
+                    std::io::Error::from(e)
+                ),
+            };
+        }
+        Ok(Some((cur, last.as_os_str().to_os_string())))
+    }
+}
+
+#[cfg(not(unix))]
+fn is_regular(root: &Path, rel: &Path) -> bool {
+    no_links_below(root, rel)
+        && std::fs::symlink_metadata(root.join(rel)).is_ok_and(|m| m.is_file())
+}
+
+#[cfg(not(unix))]
+fn move_file(src_root: &Path, src_rel: &Path, dst_root: &Path, dst_rel: &Path) -> Result<()> {
+    create_parents_checked(dst_root, dst_rel)?;
+    if !no_links_below(src_root, src_rel) || !no_links_below(dst_root, dst_rel) {
+        anyhow::bail!("a link lies in the way");
+    }
+    std::fs::rename(src_root.join(src_rel), dst_root.join(dst_rel))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn remove_file_at(root: &Path, rel: &Path) -> Result<()> {
+    if no_links_below(root, rel) {
+        std::fs::remove_file(root.join(rel))?;
+    }
+    Ok(())
+}
 
 /// A relative path made only of plain names: no `..`, root or prefix.
 fn plain_relative(rel: &Path) -> bool {
@@ -211,6 +301,7 @@ fn owned_by(_meta: &std::fs::Metadata, _uid: Option<u32>) -> bool {
 /// The check and the move are not atomic; closing that needs `*at` calls
 /// (cap-std), and a race needs an attacker who can already write into the
 /// output folder.
+#[cfg_attr(unix, allow(dead_code))]
 fn no_links_below(out: &Path, rel: &Path) -> bool {
     let mut cur = out.to_path_buf();
     let comps: Vec<_> = rel.components().collect();
@@ -237,19 +328,10 @@ fn restore_backup(backup: &Path, out: &Path) -> Result<()> {
         if !plain_relative(rel) {
             continue;
         }
-        let from = backup.join(rel);
-        if !std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file()) {
+        if !is_regular(backup, rel) {
             continue;
         }
-        let target = out.join(rel);
-        if create_parents_checked(out, rel).is_err() {
-            continue;
-        }
-        if !no_links_below(out, rel) {
-            continue;
-        }
-        std::fs::rename(&from, &target)
-            .with_context(|| format!("restoring {}", target.display()))?;
+        let _ = move_file(backup, rel, out, rel);
     }
     Ok(())
 }

@@ -194,6 +194,7 @@ const RESERVED: [&str; 4] = [
 pub fn build_parts(
     libs: &[(String, SymbolLibRead)],
     library_id: Uuid,
+    footprint_library: Uuid,
     footprints: &HashSet<String>,
     update: &Update,
 ) -> Parts {
@@ -225,12 +226,12 @@ pub fn build_parts(
                     let id = fp
                         .split_once(':')
                         .map(|(flib, fname)| {
-                            item_id(library_id, "footprint", flib, fname).to_string()
+                            item_id(footprint_library, "footprint", flib, fname).to_string()
                         })
                         .filter(|id| footprints.contains(id));
                     match id {
                         Some(uuid) => Some(Ref {
-                            library_id: library_id.to_string(),
+                            library_id: footprint_library.to_string(),
                             uuid,
                         }),
                         None => {

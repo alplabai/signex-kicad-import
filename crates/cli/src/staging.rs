@@ -97,6 +97,8 @@ impl Staging {
         placed: &mut Vec<PathBuf>,
         saved: &mut Vec<PathBuf>,
     ) -> Result<()> {
+        std::fs::create_dir_all(&self.out)
+            .with_context(|| format!("creating {}", self.out.display()))?;
         std::fs::create_dir_all(backup)
             .with_context(|| format!("creating {}", backup.display()))?;
         let save = |rel: &Path, saved: &mut Vec<PathBuf>| -> Result<()> {

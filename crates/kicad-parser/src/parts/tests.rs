@@ -24,6 +24,7 @@ fn build() -> Parts {
     build_parts(
         &[("parts".to_string(), read)],
         lib_id(),
+        lib_id(),
         &fps,
         &Update::default(),
     )
@@ -219,6 +220,7 @@ fn a_property_with_a_tab_or_triple_quotes_still_gives_a_loadable_table() {
     let p = build_parts(
         &[("li'''b".to_string(), read)],
         lib_id(),
+        lib_id(),
         &HashSet::new(),
         &Update::default(),
     );
@@ -350,7 +352,13 @@ fn an_update_keeps_unchanged_rows_and_bumps_changed_ones() {
     let read = read_symbol_file(&path).expect("reads");
     let fps: HashSet<String> =
         [item_id(lib_id(), "footprint", "Fps", "R_Test_0603").to_string()].into();
-    let p = build_parts(&[("parts".to_string(), read)], lib_id(), &fps, &update);
+    let p = build_parts(
+        &[("parts".to_string(), read)],
+        lib_id(),
+        lib_id(),
+        &fps,
+        &update,
+    );
     let t = &p.tables[0];
     assert_eq!(
         t.kept,

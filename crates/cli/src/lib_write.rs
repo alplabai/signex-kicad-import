@@ -24,6 +24,8 @@ use crate::progress::Emitter;
 /// The files to write, relative to the library root, and what they hold.
 pub struct Built {
     pub files: Vec<(String, Vec<u8>)>,
+    /// With a split, the files of the footprint library.
+    pub footprint_files: Vec<(String, Vec<u8>)>,
     pub written: Counts,
     pub items: Vec<Item>,
     /// Symbols that could have a part row (not power symbols).
@@ -84,6 +86,13 @@ pub struct Provenance<'a> {
     pub source: Option<&'a str>,
 }
 
+/// The split output: footprints go to a second library with its own id.
+#[derive(Clone, Copy)]
+pub struct Split<'a> {
+    pub footprint_library_id: Uuid,
+    pub footprint_library_name: &'a str,
+}
+
 /// The state an `--update` run builds against.
 pub struct UpdateCx<'a> {
     pub previous: &'a Previous,
@@ -98,7 +107,9 @@ pub fn build(
     emitter: &Emitter,
     update: Option<&UpdateCx<'_>>,
     provenance: Provenance<'_>,
+    split: Option<Split<'_>>,
 ) -> Built {
+    let mut footprint_files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut file_libs: Vec<(String, String)> = Vec::new();
     let mut protected: Vec<String> = Vec::new();
     let mut ledger_symbols: Vec<String> = Vec::new();
@@ -187,7 +198,12 @@ pub fn build(
         );
         ledger_footprints.push(fp.footprint.uuid.clone());
         file_libs.push((rel.clone(), lib.clone()));
-        files.push((rel, write_footprint_file(&fp).into_bytes()));
+        let target = if split.is_some() {
+            &mut footprint_files
+        } else {
+            &mut files
+        };
+        target.push((rel, write_footprint_file(&fp).into_bytes()));
         done += 1;
         emitter.progress(done, Some(total), &fp.footprint.name);
     }
@@ -205,7 +221,13 @@ pub fn build(
         ),
         None => Update::default(),
     };
-    let mut parts = build_parts(&read.symbols, library_id, &footprints, &row_update);
+    let mut parts = build_parts(
+        &read.symbols,
+        library_id,
+        split.map_or(library_id, |s| s.footprint_library_id),
+        &footprints,
+        &row_update,
+    );
     let generated: HashSet<String> = parts.generated.iter().map(|(id, _)| id.clone()).collect();
     let mut ledger_rows = parts.generated.clone();
     if let Some(u) = update {
@@ -230,7 +252,10 @@ pub fn build(
             "no --license given: the library carries no licence of its own; the source's licence applies",
         ));
     }
-    let mut meta = lib_notice::meta(provenance.license, provenance.source, Vec::new());
+    let requires = split
+        .map(|s| vec![s.footprint_library_id.to_string()])
+        .unwrap_or_default();
+    let mut meta = lib_notice::meta(provenance.license, provenance.source, requires);
     meta.description = None;
     files.push((
         manifest_name(name),
@@ -262,7 +287,12 @@ pub fn build(
         .symbols
         .iter()
         .map(|(l, _)| l.clone())
-        .chain(read.footprint_libs.iter().cloned())
+        .chain(
+            read.footprint_libs
+                .iter()
+                .filter(|_| split.is_none())
+                .cloned(),
+        )
         .collect();
     libraries.sort();
     libraries.dedup();
@@ -270,7 +300,34 @@ pub fn build(
         lib_notice::NOTICE_FILE.to_string(),
         lib_notice::notice(provenance.license, provenance.source, &inputs, &libraries).into_bytes(),
     ));
+    if let Some(s) = split {
+        // The footprint library: its own manifest (no part tables), licence and notice.
+        let meta = lib_notice::meta(provenance.license, provenance.source, Vec::new());
+        footprint_files.push((
+            manifest_name(s.footprint_library_name),
+            write_manifest(
+                &s.footprint_library_id.to_string(),
+                s.footprint_library_name,
+                &meta,
+                &[],
+                &[],
+            )
+            .into_bytes(),
+        ));
+        if let Some(text) = lib_notice::license_text(provenance.license) {
+            footprint_files.push((lib_notice::LICENSE_FILE.to_string(), text.into_bytes()));
+        }
+        let mut fp_libs: Vec<String> = read.footprint_libs.clone();
+        fp_libs.sort();
+        fp_libs.dedup();
+        footprint_files.push((
+            lib_notice::NOTICE_FILE.to_string(),
+            lib_notice::notice(provenance.license, provenance.source, &inputs, &fp_libs)
+                .into_bytes(),
+        ));
+    }
     Built {
+        footprint_files,
         files,
         written,
         items,

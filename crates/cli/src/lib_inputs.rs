@@ -62,6 +62,16 @@ pub struct LibraryArgs {
     #[arg(long)]
     pub update: bool,
 
+    /// Write the footprints into a second library at this folder; the part
+    /// rows of `--output` point at it and its manifest `requires` list names it.
+    #[arg(long)]
+    pub split_footprints: Option<PathBuf>,
+
+    /// Display name of the footprint library of `--split-footprints`.
+    /// Default: `<name> Footprints`.
+    #[arg(long)]
+    pub footprints_name: Option<String>,
+
     /// SPDX identifier of the licence the source libraries are under. Written
     /// to the manifest; for `CC-BY-SA-4.0` the licence text and the KiCad
     /// libraries' design exception are written to `LICENSE`.
@@ -106,6 +116,37 @@ pub fn split_search_paths(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<(String, Stri
         }
     }
     (dirs, vars)
+}
+
+/// The folder of `--split-footprints`, checked like `--output`: not an
+/// existing non-empty folder, and apart from `--output`. An update of a split
+/// library is not supported.
+pub fn validate_split(args: &LibraryArgs, out: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = &args.split_footprints else {
+        return Ok(None);
+    };
+    if args.update {
+        return Err("--update does not work with --split-footprints yet".to_string());
+    }
+    let abs = std::path::absolute(dir)
+        .map_err(|e| format!("--split-footprints {}: {e}", dir.display()))?;
+    if abs == out || abs.starts_with(out) || out.starts_with(&abs) {
+        return Err("--split-footprints must be a folder apart from --output".to_string());
+    }
+    if abs.exists() {
+        let empty = abs.is_dir()
+            && std::fs::read_dir(&abs)
+                .map_err(|e| e.to_string())?
+                .next()
+                .is_none();
+        if !empty {
+            return Err(format!(
+                "--split-footprints {} exists and is not an empty folder",
+                abs.display()
+            ));
+        }
+    }
+    Ok(Some(abs))
 }
 
 /// What a source path is.

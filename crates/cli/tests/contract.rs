@@ -1337,3 +1337,108 @@ fn license_source_and_notice_are_written_and_a_missing_license_is_said() {
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[test]
+fn split_output_writes_two_libraries_and_the_parts_point_at_the_footprint_library() {
+    let dir = scratch("lib-split");
+    let sym = dir.join("Parts.kicad_sym");
+    std::fs::write(
+        &sym,
+        TINY.replace(
+            "(property \"Value\" \"R\")",
+            "(property \"Value\" \"R\") (property \"Footprint\" \"Test:R_Test_0603\")",
+        ),
+    )
+    .expect("sym");
+    let pretty = fixtures_dir("footprints/Test.pretty");
+    let run_split = |tag: &str| {
+        let (main, fps) = (
+            dir.join(format!("main-{tag}")),
+            dir.join(format!("fps-{tag}")),
+        );
+        let r = run(&[
+            "library",
+            sym.to_str().expect("utf8"),
+            pretty.to_str().expect("utf8"),
+            "--output",
+            main.to_str().expect("utf8"),
+            "--split-footprints",
+            fps.to_str().expect("utf8"),
+            "--name",
+            "Standard Symbols & Parts",
+            "--footprints-name",
+            "Standard Footprints",
+            "--license",
+            "CC-BY-SA-4.0",
+            "--json",
+        ]);
+        assert!(
+            matches!(r.status.code(), Some(0 | 2)),
+            "{}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        (main, fps)
+    };
+    let (main, fps) = run_split("a");
+    let toml_of = |p: std::path::PathBuf| -> toml::Value {
+        toml::from_str(&std::fs::read_to_string(p).expect("file")).expect("toml")
+    };
+    let parts_lib = toml_of(main.join("Standard Symbols & Parts.snxlib"));
+    let fp_lib = toml_of(fps.join("Standard Footprints.snxlib"));
+    let fp_id = fp_lib["library_id"].as_str().expect("id").to_string();
+    assert_ne!(fp_id, parts_lib["library_id"].as_str().expect("id"));
+    assert_eq!(
+        parts_lib["library"]["requires"][0].as_str(),
+        Some(fp_id.as_str())
+    );
+    assert!(fp_lib["library"].get("requires").is_none() && fp_lib.get("tables").is_none());
+    // The footprints live only in the footprint library; both carry licence and notice.
+    assert!(!main.join("footprints").exists() && main.join("symbols").is_dir());
+    assert!(fps.join("footprints").is_dir() && !fps.join("symbols").exists());
+    for d in [&main, &fps] {
+        assert!(
+            d.join("LICENSE").is_file() && d.join("NOTICE.md").is_file(),
+            "{d:?}"
+        );
+    }
+    // The part's footprint reference names the footprint library and an existing file.
+    let tsv = parts_lib["tables"]["Parts"]["tsv"].as_str().expect("tsv");
+    let cells: Vec<&str> = tsv.lines().nth(1).expect("row").split('\t').collect();
+    let fp_ref: Value = serde_json::from_str(cells[6]).expect("ref");
+    assert_eq!(fp_ref["library_id"].as_str(), Some(fp_id.as_str()));
+    let uuid = fp_ref["uuid"].as_str().expect("uuid");
+    assert!(fps.join(format!("footprints/{uuid}.snxfpt")).is_file());
+    // Deterministic: a second run gives the same ids and bytes.
+    let (main2, fps2) = run_split("b");
+    assert_eq!(
+        std::fs::read(main.join("Standard Symbols & Parts.snxlib")).expect("a"),
+        std::fs::read(main2.join("Standard Symbols & Parts.snxlib")).expect("b")
+    );
+    assert_eq!(
+        std::fs::read(fps.join("Standard Footprints.snxlib")).expect("a"),
+        std::fs::read(fps2.join("Standard Footprints.snxlib")).expect("b")
+    );
+    // A split library is not updated, and the two folders must be apart.
+    let r = run(&[
+        "library",
+        sym.to_str().expect("utf8"),
+        "--output",
+        main.to_str().expect("utf8"),
+        "--split-footprints",
+        fps.to_str().expect("utf8"),
+        "--update",
+        "--json",
+    ]);
+    assert_eq!(r.status.code(), Some(1));
+    let r = run(&[
+        "library",
+        sym.to_str().expect("utf8"),
+        "--output",
+        dir.join("same").to_str().expect("utf8"),
+        "--split-footprints",
+        dir.join("same/inner").to_str().expect("utf8"),
+        "--json",
+    ]);
+    assert_eq!(r.status.code(), Some(1));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

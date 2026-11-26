@@ -18,7 +18,7 @@ use crate::lib_write::build;
 use crate::lib_write::{Provenance, UpdateCx};
 use crate::progress::{Emitter, HEARTBEAT};
 use crate::staging::Staging;
-use kicad_parser::libids::library_id;
+use kicad_parser::libids::library_id as derive_library_id;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -110,6 +110,10 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::failed(e),
     };
+    let split_dir = match crate::lib_inputs::validate_split(args, &out) {
+        Ok(d) => d,
+        Err(e) => return Outcome::failed(e),
+    };
     let names: Vec<String> = inputs
         .iter()
         .map(|(p, _)| {
@@ -131,9 +135,24 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             |s| s.to_string_lossy().into_owned(),
         )
     });
-    let library_id = match &args.library_id {
-        Some(id) => uuid::Uuid::parse_str(id).unwrap_or_default(),
-        None => library_id(&name, &names.iter().map(String::as_str).collect::<Vec<_>>()),
+    let library_id = library_id_main(&name, args, &names);
+    // The split output: the footprint library has a name and an id of its own,
+    // derived like the main one, so the part rows can point at it.
+    let footprints_name = args
+        .footprints_name
+        .clone()
+        .unwrap_or_else(|| format!("{name} Footprints"));
+    let footprint_library_id = if split_dir.is_some() {
+        let mut id = derive_library_id(
+            &footprints_name,
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        if id == library_id_main(&name, args, &names) {
+            id = derive_library_id(&format!("{footprints_name} (footprints)"), &[]);
+        }
+        id
+    } else {
+        library_id_main(&name, args, &names)
     };
     if args.update
         && let Err(e) = check_update_target(&out, library_id)
@@ -151,7 +170,13 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         search_vars,
     );
     emitter.phase("read", Some(inputs.len()));
-    let read = match read_inputs(&inputs, library_id, &args.search_path, &models, emitter) {
+    let read = match read_inputs(
+        &inputs,
+        footprint_library_id,
+        &args.search_path,
+        &models,
+        emitter,
+    ) {
         Ok(r) => r,
         Err(e) => return Outcome::failed(format!("{e:#}")),
     };
@@ -210,6 +235,10 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
             license: args.license.as_deref(),
             source: args.source.as_deref(),
         },
+        split_dir.as_ref().map(|_| crate::lib_write::Split {
+            footprint_library_id,
+            footprint_library_name: &footprints_name,
+        }),
     );
     report.items.extend(built.items);
     report.written_counts = built.written;
@@ -270,19 +299,55 @@ fn library(args: &LibraryArgs, emitter: &Emitter) -> Outcome {
         report.file_libraries.clear();
         return finish(&report, &out, Vec::new(), &report_path);
     }
-    emitter.phase("write", Some(built.files.len()));
+    emitter.phase(
+        "write",
+        Some(built.files.len() + built.footprint_files.len()),
+    );
     let staged = (|| -> anyhow::Result<Vec<std::path::PathBuf>> {
         let mut stage = Staging::new(&out)?;
         for (done, (rel, bytes)) in built.files.iter().enumerate() {
             emitter.progress(done, Some(built.files.len()), rel);
             stage.write(rel, bytes)?;
         }
+        let mut second = match &split_dir {
+            Some(dir) => {
+                let mut s = Staging::new(dir)?;
+                for (rel, bytes) in &built.footprint_files {
+                    s.write(rel, bytes)?;
+                }
+                Some((s, dir))
+            }
+            None => None,
+        };
         test_panic("write");
-        stage.commit(&stale)
+        let placed = stage.commit(&stale)?;
+        if let Some((s, _)) = second.take()
+            && let Err(e) = s.commit(&[])
+        {
+            // The first library is new (a split is never an update): take it back.
+            for p in &placed {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e);
+        }
+        Ok(placed)
     })();
     match staged {
         Ok(files) => {
             emitter.progress(built.files.len(), Some(built.files.len()), "done");
+            if let Some(dir) = &split_dir {
+                report.items.push(
+                    kicad_parser::Item::new(
+                        kicad_parser::ItemKind::Library,
+                        footprints_name.clone(),
+                        "library.split_written",
+                        kicad_parser::Severity::Info,
+                        "the footprints are in a second library",
+                    )
+                    .with_id(&footprint_library_id.to_string())
+                    .with_detail(serde_json::json!({ "path": dir.display().to_string() })),
+                );
+            }
             finish(&report, &out, files, &report_path)
         }
         Err(e) => failed(format!("{e:#}"), &report),
@@ -345,3 +410,12 @@ pub fn test_panic(point: &str) {
 
 #[cfg(not(debug_assertions))]
 pub fn test_panic(_point: &str) {}
+
+/// The id of the main library: `--library-id`, or derived from the name and
+/// the input file names.
+fn library_id_main(name: &str, args: &LibraryArgs, names: &[String]) -> uuid::Uuid {
+    match &args.library_id {
+        Some(id) => uuid::Uuid::parse_str(id).unwrap_or_default(),
+        None => derive_library_id(name, &names.iter().map(String::as_str).collect::<Vec<_>>()),
+    }
+}

@@ -351,6 +351,25 @@ impl Drop for Staging {
     }
 }
 
+/// A folder junction at `link` pointing to `target`, made with `mklink /J`
+/// (no privilege needed, unlike a symlink). False, with a note, when it cannot
+/// be made, so the calling test skips.
+#[cfg(all(test, windows))]
+pub(crate) fn make_junction(link: &Path, target: &Path) -> bool {
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output();
+    match made {
+        Ok(o) if o.status.success() && link.exists() => true,
+        other => {
+            eprintln!("note: no junction could be made ({other:?}); the test is skipped");
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +566,38 @@ mod tests {
         assert!(create_parents_checked(&out, Path::new("file/x.snxsym")).is_err());
         create_parents_checked(&out, Path::new("n/m/o.snxsym")).expect("plain folders");
         assert!(out.join("n/m").is_dir());
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    /// std reports a junction as a link, so the checks that refuse a unix
+    /// link refuse a junction in the same place.
+    #[cfg(windows)]
+    #[test]
+    fn a_move_behind_a_junction_is_refused() {
+        let base = tmp("behindjunction");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("out");
+        std::fs::create_dir_all(base.join("elsewhere")).expect("d");
+        std::fs::write(base.join("elsewhere/a.snxsym"), "victim").expect("f");
+        if !make_junction(&out.join("symbols"), &base.join("elsewhere")) {
+            std::fs::remove_dir_all(&base).expect("cleanup");
+            return;
+        }
+        assert!(
+            std::fs::symlink_metadata(out.join("symbols"))
+                .is_ok_and(|m| m.file_type().is_symlink())
+        );
+        assert!(!is_regular(&out, Path::new("symbols/a.snxsym")));
+        assert!(create_parents_checked(&out, Path::new("symbols/b.snxsym")).is_err());
+        let mut stage = Staging::new(&out).expect("stage");
+        stage.write("symbols/a.snxsym", b"new").expect("write");
+        assert!(stage.commit(&[PathBuf::from("symbols/a.snxsym")]).is_err());
+        assert_eq!(
+            std::fs::read(base.join("elsewhere/a.snxsym")).expect("f"),
+            b"victim"
+        );
+        assert!(!base.join("elsewhere/b.snxsym").exists());
+        std::fs::remove_dir(out.join("symbols")).expect("unlink");
         std::fs::remove_dir_all(&base).expect("cleanup");
     }
 }

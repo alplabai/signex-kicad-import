@@ -856,9 +856,7 @@ mod tests {
         std::fs::create_dir_all(out.join("symbols")).expect("d");
         std::fs::write(base.join("victim"), "victim").expect("f");
         std::fs::write(base.join("victim2"), "victim2").expect("f");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(base.join("victim2"), out.join("symbols/link.snxsym"))
-            .expect("link");
+        let linked = file_link(&base.join("victim2"), &out.join("symbols/link.snxsym"));
         let report = serde_json::json!({
             "converter": "signex-kicad-import",
             "files": ["../victim", base.join("victim2").display().to_string(), "symbols/link.snxsym", "symbols/../../victim", "other/x.snxsym", "symbols/a.txt"],
@@ -866,12 +864,73 @@ mod tests {
         });
         std::fs::write(out.join("import-report.json"), report.to_string()).expect("report");
         let p = Previous::load(&out);
-        assert!(p.files.is_empty(), "{:?}", p.files);
-        assert_eq!(p.ignored.len(), 6);
+        if linked {
+            assert!(p.files.is_empty(), "{:?}", p.files);
+            assert_eq!(p.ignored.len(), 6);
+        } else {
+            // No link could be made: the entry names a missing file, which is
+            // harmless and well formed, so it alone is kept.
+            assert_eq!(p.files, ["symbols/link.snxsym"]);
+            assert_eq!(p.ignored.len(), 5);
+        }
+        // Either way the bad entries taint the report: nothing is deleted.
         let all: HashSet<String> = ["L".to_string()].into();
         assert!(p.stale(&[], &all, &all).is_empty());
         assert_eq!(std::fs::read(base.join("victim")).expect("v"), b"victim");
         assert_eq!(std::fs::read(base.join("victim2")).expect("v"), b"victim2");
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    /// A file link at `link`. Unix always makes one; Windows needs a privilege
+    /// (or developer mode) for it, so there a refusal skips the link's part of
+    /// a test with a note.
+    fn file_link(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(not(any(unix, windows)))]
+        let made: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+        match made {
+            Ok(()) => true,
+            Err(e) if cfg!(unix) => panic!("symlink: {e}"),
+            Err(e) => {
+                eprintln!("note: no file link on this system ({e}); its check is skipped");
+                false
+            }
+        }
+    }
+
+    /// A folder junction (Windows' unprivileged folder link) in place of a
+    /// library folder: an entry below it is refused, nothing behind it is touched.
+    #[cfg(windows)]
+    #[test]
+    fn a_report_entry_behind_a_junction_is_not_trusted() {
+        let base = scratch("junction");
+        let out = base.join("lib");
+        std::fs::create_dir_all(&out).expect("d");
+        std::fs::create_dir_all(base.join("elsewhere")).expect("d");
+        std::fs::write(base.join("elsewhere/a.snxsym"), "victim").expect("f");
+        if !crate::staging::make_junction(&out.join("symbols"), &base.join("elsewhere")) {
+            std::fs::remove_dir_all(&base).expect("cleanup");
+            return;
+        }
+        let report = serde_json::json!({
+            "converter": "signex-kicad-import",
+            "files": ["symbols/a.snxsym"],
+            "file_libraries": {"symbols/a.snxsym": "L"},
+        });
+        std::fs::write(out.join("import-report.json"), report.to_string()).expect("report");
+        let p = Previous::load(&out);
+        assert!(p.files.is_empty(), "{:?}", p.files);
+        assert_eq!(p.ignored, ["symbols/a.snxsym"]);
+        let all: HashSet<String> = ["L".to_string()].into();
+        assert!(p.stale(&[], &all, &all).is_empty());
+        assert_eq!(
+            std::fs::read(base.join("elsewhere/a.snxsym")).expect("v"),
+            b"victim"
+        );
+        std::fs::remove_dir(out.join("symbols")).expect("unlink");
         std::fs::remove_dir_all(&base).expect("cleanup");
     }
 

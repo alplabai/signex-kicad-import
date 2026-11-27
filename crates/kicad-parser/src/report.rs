@@ -6,6 +6,11 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::json;
+
+use crate::items::{Item, ItemKind};
+use crate::message_codes::classify;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     counts: BTreeMap<String, usize>,
@@ -27,6 +32,21 @@ impl Report {
     /// `(message, count)` pairs, by message.
     pub fn entries(&self) -> impl Iterator<Item = (&str, usize)> {
         self.counts.iter().map(|(m, &n)| (m.as_str(), n))
+    }
+
+    /// The messages as structured items of `kind` from `source`, each with
+    /// its catalogue code and severity and the count in `detail`.
+    pub fn items(&self, kind: ItemKind, source: &str) -> Vec<Item> {
+        self.entries()
+            .map(|(message, count)| {
+                let (code, severity, mut detail) = classify(message);
+                if !detail.is_object() {
+                    detail = json!({});
+                }
+                detail["count"] = json!(count);
+                Item::new(kind, source, code, severity, message).with_detail(detail)
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {

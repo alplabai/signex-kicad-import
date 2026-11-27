@@ -1,0 +1,6 @@
+(footprint "Bottom_Test"
+	(version 20240108)
+	(generator "handwritten")
+	(layer "B.Cu")
+	(pad "1" smd rect (at 0 0) (size 1 1) (layers "B.Cu" "B.Paste" "B.Mask"))
+)

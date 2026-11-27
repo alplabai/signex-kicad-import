@@ -10,6 +10,10 @@ snx-writer = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }

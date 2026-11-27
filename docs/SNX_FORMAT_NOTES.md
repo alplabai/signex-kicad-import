@@ -7,6 +7,11 @@ check (`ring.rs`) and the placement self-check (`placement_check.rs`) in
 this repository were written from these notes and from the behaviour they
 describe; no Signex source code was copied into this repository.
 
+The library files (`.snxsym`, `.snxfpt`, `.snxlib`) are written from the
+separate public library format; what the converter does to a KiCad library is in
+`LIBRARY_MAPPING.md`, the facts it relies on for KiCad symbols in
+`KICAD_SYMBOL_FORMAT.md`. This file covers the board files only.
+
 ## Files
 
 - A `.snxpcb` is TOML. It starts with `format = "snxpcb/1.4"`, `pcb_id`,

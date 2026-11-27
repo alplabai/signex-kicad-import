@@ -256,7 +256,41 @@ fn pad(node: &SExpr, frame: Frame, cx: &mut Context<'_>) -> Option<Pad> {
         drill_shape,
         layers,
         net: cx.nets.net_of(node),
+        solder_mask_margin: number_of(node, "solder_mask_margin"),
+        paste_margin: number_of(node, "solder_paste_margin"),
+        drill_slot: slot_of(node),
+        property: node
+            .find_all("property")
+            .into_iter()
+            .filter_map(SExpr::first_arg)
+            .find(|w| w.starts_with("pad_prop_"))
+            .unwrap_or("")
+            .to_string(),
     })
+}
+
+/// `(drill oval DIAMETER WIDTH)`: the two sizes when they differ (a slot).
+fn slot_of(node: &SExpr) -> Option<Point> {
+    let drill = node.find("drill")?;
+    if !has_flag(drill, "oval") {
+        return None;
+    }
+    let numbers: Vec<f64> = drill
+        .children()
+        .iter()
+        .filter_map(|c| match c {
+            SExpr::Atom(a) => a
+                .as_str()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v > 0.0),
+            SExpr::List(_) => None,
+        })
+        .collect();
+    match numbers.as_slice() {
+        [w, h, ..] if (w - h).abs() > 1e-9 => Some(Point::new(*w, *h)),
+        _ => None,
+    }
 }
 
 /// `(drill d)`, `(drill oval w h)`, `(drill d (offset x y))`. A slot keeps

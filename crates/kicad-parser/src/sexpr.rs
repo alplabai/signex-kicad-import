@@ -179,6 +179,10 @@ pub fn parse(input: &str) -> Result<SExpr, String> {
     Ok(expr)
 }
 
+/// The deepest nesting `parse` accepts. Real files stay below 50; the cap
+/// keeps hostile input from building a tree whose drop would overflow the stack.
+pub const MAX_DEPTH: usize = 1000;
+
 /// Iterative S-expression parser (no recursion -- safe for arbitrarily deep input)
 fn parse_tokens(tokens: &[Token], start: usize) -> Result<(SExpr, usize), String> {
     let mut stack: Vec<Vec<SExpr>> = Vec::new();
@@ -187,6 +191,9 @@ fn parse_tokens(tokens: &[Token], start: usize) -> Result<(SExpr, usize), String
     while i < tokens.len() {
         match &tokens[i] {
             Token::Open => {
+                if stack.len() >= MAX_DEPTH {
+                    return Err(format!("Nesting deeper than {MAX_DEPTH}"));
+                }
                 stack.push(Vec::new());
                 i += 1;
             }
@@ -320,6 +327,17 @@ mod tests {
         let input = format!("{}a{}", "(".repeat(depth), ")".repeat(depth));
         let result = parse(&input);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn nesting_past_the_cap_is_an_error() {
+        let ok = format!("{}a{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        assert!(parse(&ok).is_ok());
+        let deep = MAX_DEPTH + 1;
+        let bad = format!("{}a{}", "(".repeat(deep), ")".repeat(deep));
+        assert!(parse(&bad).is_err_and(|e| e.contains("Nesting deeper")));
+        // Unclosed and absurdly deep: refused at the cap, not after the whole input.
+        assert!(parse(&"(".repeat(1_000_000)).is_err());
     }
 
     #[test]

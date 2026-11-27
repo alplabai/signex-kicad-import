@@ -16,6 +16,7 @@ independently from [Signex](https://github.com/alplabai/signex).
 signex-kicad-import path/to/board.kicad_pcb            # writes board.snxpcb + board.snxprj
 signex-kicad-import path/to/project.kicad_pro -o out/  # every .kicad_pcb in the project folder
 signex-kicad-import --json --force board.kicad_pcb     # JSON summary, replace existing output
+signex-kicad-import Device.kicad_sym -o out/                   # one symbol library, written as Device.snxsym
 ```
 
 Existing output files are not replaced unless `--force` is given. Every
@@ -28,7 +29,17 @@ The summary lists what could not be carried over exactly (by kind and
 count) and a self-check: how many track ends land on a pad of their own
 net, and how many only on another net's pad, once Signex places the pads.
 
-Schematic and symbol conversion is not part of this release.
+A `.kicad_sym` given without a subcommand is converted to one `<name>.snxsym`
+(derived symbols, `extends`, are written as symbols of their own; what could not
+be carried over is listed in the summary by message and count, like a board).
+Schematic conversion is not part of this release.
+
+For Signex's library converter contract, `signex-kicad-import describe --json`
+and `signex-kicad-import library <inputs>... --output <dir>` (KiCad symbol
+libraries and tables) are described in `docs/LIBRARY_CONVERTER.md`; the
+`library` command converts KiCad symbol libraries and footprints into a Signex
+library directory (`docs/LIBRARY_MAPPING.md`: symbols, footprints and part rows,
+from files, folders or library tables; 3D STEP models are embedded).
 
 ## What the board conversion covers
 
@@ -74,6 +85,17 @@ always gives the same files.
 `crates/kicad-parser/tests/real_boards.rs` converts four real boards, one
 per source format generation (6 to 9); they are listed with their
 licences in `crates/kicad-parser/tests/fixtures/README.md`.
+
+The writers for `.snxsym`, `.snxfpt` and the `.snxlib` manifest are checked
+against the Signex library format's conformance fixtures, which belong to the
+Signex repository and are not copied here:
+
+```bash
+SIGNEX_FORMAT_FIXTURES=/path/to/signex/docs/fixtures/library-format \
+  cargo test -p snx-writer --test library_conformance
+```
+
+Without the variable those tests print a skip message and pass.
 
 ## Install
 

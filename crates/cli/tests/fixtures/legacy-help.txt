@@ -1,0 +1,13 @@
+Convert KiCad boards (.kicad_pcb or .kicad_pro) and symbol libraries (.kicad_sym) to Signex native files
+
+Usage: signex-kicad-import [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>  A .kicad_pcb, a .kicad_pro whose folder holds the boards, or a .kicad_sym symbol library (written as one .snxsym)
+
+Options:
+  -o, --output <OUTPUT>  Output directory. Defaults to the input file's directory
+      --force            Replace output files that already exist
+      --json             Print a JSON summary on stdout instead of human-readable progress
+  -h, --help             Print help
+  -V, --version          Print version

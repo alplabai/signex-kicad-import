@@ -1,0 +1,8 @@
+(footprint "Slot_Test"
+	(version 20240108)
+	(generator "handwritten")
+	(layer "F.Cu")
+	(pad "1" thru_hole oval (at 0 0) (size 2.5 1.5) (drill oval 0.8 1.6) (layers "*.Cu" "*.Mask"))
+	(pad "2" thru_hole oval (at 4 0) (size 2.5 1.5) (drill oval 1.6 0.8) (layers "*.Cu" "*.Mask"))
+	(pad "3" thru_hole oval (at 8 0) (size 1.5 1.5) (drill oval 0.8 0.8) (layers "*.Cu" "*.Mask"))
+)

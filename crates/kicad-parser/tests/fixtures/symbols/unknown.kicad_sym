@@ -1,0 +1,19 @@
+(kicad_symbol_lib (version 20990101) (generator "handwritten") (future_header yes)
+  (symbol "Odd_Part"
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Odd_Part" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (shiny_new_flag yes)
+    (embedded_fonts no)
+    (symbol "Odd_Part_1_1"
+      (text_box "hello" (at 0 0 0) (size 5 2))
+      (rectangle (start 0 0) (stroke (width 0.1) (type default)) (fill (type none)))
+      (rectangle (start -1 -1) (end 1 1) (stroke (width 0.1) (type default)) (fill (type sparkle)))
+      (pin teleporter line (at 0 3 270) (length 1) (name "T" (effects (font (size 1 1)))) (number "1" (effects (font (size 1 1)))))
+      (pin passive wavy (at 0 -3 90) (length 1) (name "W" (effects (font (size 1 1)))) (number "2" (effects (font (size 1 1)))))
+      (pin passive line (length 1) (name "X" (effects (font (size 1 1)))) (number "3" (effects (font (size 1 1)))))
+      (pin passive line (at 3 0 45) (name "Y" (effects (font (size 1 1)))) (number "4" (effects (font (size 1 1)))))))
+  (symbol "Odd_Part_Two"
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "Odd_Part_Two_x_y" (pin passive line (at 0 0 0) (length 1) (name "A" (effects (font (size 1 1)))) (number "1" (effects (font (size 1 1))))))
+    (symbol "Odd_Part_Two_1_3" (pin passive line (at 0 0 0) (length 1) (name "B" (effects (font (size 1 1)))) (number "2" (effects (font (size 1 1))))))
+    (symbol "Elsewhere_1_1")))

@@ -1,0 +1,26 @@
+(kicad_symbol_lib (version 20231120) (generator "handwritten")
+  (symbol "Base_Part"
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Base_Part" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package_X:BASE" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "Base_Part_1_1"
+      (rectangle (start -2 -2) (end 2 2) (stroke (width 0.2) (type default)) (fill (type none)))
+      (pin passive line (at 0 4 270) (length 2) (name "A" (effects (font (size 1 1)))) (number "1" (effects (font (size 1 1)))))))
+  (symbol "Derived_Part"
+    (extends "Base_Part")
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Derived_Part" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Footprint" "Package_X:DERIVED" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27)))))
+  (symbol "Grandchild_Part"
+    (extends "Derived_Part")
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "Grandchild_Part" (at 0 0 0) (effects (font (size 1.27 1.27)))))
+  (symbol "Orphan_Part"
+    (extends "No_Such_Parent")
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27)))))
+  (symbol "Loop_A" (extends "Loop_B") (property "Reference" "U" (at 0 0 0) (effects (font (size 1 1)))))
+  (symbol "Loop_B" (extends "Loop_A") (property "Reference" "U" (at 0 0 0) (effects (font (size 1 1)))))
+  (symbol "Base_Part"
+    (property "Reference" "X" (at 0 0 0) (effects (font (size 1.27 1.27))))))

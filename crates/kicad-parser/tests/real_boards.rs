@@ -132,3 +132,21 @@ fn the_physical_stackup_is_carried() {
     assert_eq!(written[4]["kind"].as_str(), Some("dielectric"));
     assert_eq!(written[4]["thickness_mm"].as_float(), Some(0.17));
 }
+
+/// Every message the real boards produce has a catalogue code.
+#[test]
+fn real_board_messages_all_have_codes() {
+    use kicad_parser::message_codes::{UNCLASSIFIED, classify};
+    let mut seen = 0;
+    for name in [
+        "v6-rp2040-designguide.kicad_pcb",
+        "v7-microwave-probe.kicad_pcb",
+        "v8-n64-expansion-pak.kicad_pcb",
+    ] {
+        for (message, _) in convert(name).report.entries() {
+            seen += 1;
+            assert_ne!(classify(message).0, UNCLASSIFIED, "{name}: {message}");
+        }
+    }
+    assert!(seen > 0, "the real boards report nothing");
+}

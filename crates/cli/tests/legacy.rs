@@ -16,7 +16,11 @@ fn help_is_unchanged() {
     let out = run(&["--help"]);
     assert_eq!(out.status.code(), Some(0));
     let want = std::fs::read_to_string(fixtures().join("legacy-help.txt")).expect("golden");
-    assert_eq!(String::from_utf8(out.stdout).expect("utf8"), want);
+    // The usage line names the binary as run; on Windows that is `….exe`.
+    let got = String::from_utf8(out.stdout)
+        .expect("utf8")
+        .replace("signex-kicad-import.exe", "signex-kicad-import");
+    assert_eq!(got, want);
 }
 
 #[test]
@@ -32,13 +36,36 @@ fn json_summary_of_a_real_board_is_unchanged() {
         out_dir.to_str().expect("utf8"),
     ]);
     assert_eq!(out.status.code(), Some(0));
-    let got = String::from_utf8(out.stdout)
-        .expect("utf8")
-        .replace(out_dir.to_str().expect("utf8"), "<OUT>");
+    let got = with_out_placeholder(&String::from_utf8(out.stdout).expect("utf8"), &out_dir);
     let want = std::fs::read_to_string(fixtures().join("legacy-v7-summary.json")).expect("golden");
     assert_eq!(got, want);
     assert!(out_dir.join("v7-microwave-probe.snxpcb").is_file());
     std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// `json` (a summary) with `dir` written `<OUT>` in every spelling the
+/// converter may print it (as given, canonical, without the Windows
+/// verbatim prefix), JSON-escaped as the summary holds it, and the
+/// separator after it written `/` as the golden has it.
+fn with_out_placeholder(json: &str, dir: &std::path::Path) -> String {
+    let escaped = |p: &std::path::Path| {
+        let quoted = serde_json::to_string(p.to_str().expect("utf8")).expect("json");
+        quoted[1..quoted.len() - 1].to_string()
+    };
+    let mut spellings = vec![escaped(dir)];
+    if let Ok(canonical) = dir.canonicalize() {
+        spellings.push(escaped(&canonical));
+        if let Some(plain) = canonical.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            spellings.push(escaped(std::path::Path::new(plain)));
+        }
+    }
+    // Longest first, so a spelling that contains another is replaced whole.
+    spellings.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let mut text = json.to_string();
+    for spelling in spellings {
+        text = text.replace(&spelling, "<OUT>");
+    }
+    text.replace("<OUT>\\\\", "<OUT>/")
 }
 
 #[test]
@@ -46,10 +73,17 @@ fn a_failed_run_keeps_its_summary_and_exit_code() {
     let out = run(&["--json", "/nonexistent.kicad_pcb"]);
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8(out.stdout).expect("utf8");
-    assert_eq!(
-        text,
-        "{\"converter\":\"signex-kicad-import 0.2.0\",\"error\":\"input path not found: /nonexistent.kicad_pcb: No such file or directory (os error 2)\",\"files\":[],\"ok\":false,\"warnings\":[]}\n"
+    // The words of the OS error differ by OS; the path and the code don't.
+    let (head, tail) = (
+        "{\"converter\":\"signex-kicad-import 0.2.0\",\"error\":\"input path not found: /nonexistent.kicad_pcb: ",
+        " (os error 2)\",\"files\":[],\"ok\":false,\"warnings\":[]}\n",
     );
+    assert!(text.starts_with(head) && text.ends_with(tail), "{text}");
+    let words = &text[head.len()..text.len() - tail.len()];
+    assert!(!words.is_empty() && !words.contains('"'), "{text}");
+    if cfg!(unix) {
+        assert_eq!(words, "No such file or directory");
+    }
 }
 
 #[test]

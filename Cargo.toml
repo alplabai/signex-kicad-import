@@ -29,6 +29,14 @@ sha2 = "0.10"
 # Owner and no-follow opens on unix
 rustix = { version = "1", features = ["process", "fs"] }
 
+# Owner SIDs on Windows (MIT OR Apache-2.0)
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 # Embedded 3D models: raw deflate and base64
 flate2 = "1"
 base64 = "0.22"

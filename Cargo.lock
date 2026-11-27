@@ -574,6 +574,7 @@ dependencies = [
  "snx-writer",
  "toml",
  "uuid",
+ "windows-sys",
 ]
 
 [[package]]

@@ -83,5 +83,9 @@ when a message written in the sources is missing from the catalogue.
 A panic is a failed run: exit 1 and a summary `internal error: ...`. Library
 files are written to a staging folder (`.<output>.tmp-import` beside
 `--output`) and moved in only on success, so a failed run leaves none, and a
-library that existed before `--update` stays as it was. `import-report.*` stays
+library that existed before `--update` stays as it was. A run that died while
+committing leaves its backup in the staging folder; the next run puts it back
+first, but only when the folder is provably the current user's (unix: its owner
+uid; Windows: its owner SID, see LIBRARY_MAPPING.md). Otherwise it stops and
+asks you to inspect the folder. `import-report.*` stays
 once the sources were read. A failed summary has `library: null`.

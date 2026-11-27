@@ -26,8 +26,9 @@ impl Staging {
     }
 
     /// `new`, with the user id the leftover folder must belong to (a test
-    /// passes another one). A leftover staging folder that is not provably
-    /// ours is neither restored nor removed: the error says to inspect it.
+    /// passes another one; Windows ignores it and compares owner SIDs). A
+    /// leftover staging folder that is not provably ours is neither restored
+    /// nor removed: the error says to inspect it.
     pub fn new_as(out: &Path, uid: Option<u32>) -> Result<Self> {
         let name = out
             .file_name()
@@ -37,7 +38,7 @@ impl Staging {
             if !meta.is_dir() {
                 anyhow::bail!("{} is not a plain folder; remove it", dir.display());
             }
-            if !owned_by(&meta, uid) {
+            if !owned_by(&dir, &meta, uid) {
                 anyhow::bail!(
                     "{} was left by another user or its owner cannot be verified on this system; inspect it and remove it by hand",
                     dir.display()
@@ -51,7 +52,7 @@ impl Staging {
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         // What we made must be a real folder of ours, not a link someone put there.
         match std::fs::symlink_metadata(&dir) {
-            Ok(meta) if meta.is_dir() && (!cfg!(unix) || owned_by(&meta, uid)) => {}
+            Ok(meta) if meta.is_dir() && (!cfg!(unix) || owned_by(&dir, &meta, uid)) => {}
             _ => anyhow::bail!(
                 "{} is not a plain folder of the current user; remove it",
                 dir.display()
@@ -257,7 +258,8 @@ fn plain_relative(rel: &Path) -> bool {
             .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 
-/// The user id this process runs as (`None` off unix, where nothing is "ours").
+/// The user id this process runs as (`None` off unix; Windows checks owners
+/// by SID instead).
 #[cfg(unix)]
 pub fn current_uid() -> Option<u32> {
     Some(rustix::process::geteuid().as_raw())
@@ -292,17 +294,168 @@ fn create_parents_checked(base: &Path, rel: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether `meta` is a folder of the user `uid`. Fails closed: without a
-/// known user, or off unix, nothing is "ours".
+/// Whether the folder `path` (its `meta`) belongs to the user `uid`. Fails
+/// closed: without a known user, or where the owner cannot be read, nothing
+/// is "ours".
 #[cfg(unix)]
-fn owned_by(meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
+fn owned_by(_path: &Path, meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
     use std::os::unix::fs::MetadataExt;
-    uid.is_some_and(|u| u == meta.uid())
+    owner_is_ours(Some(meta.uid()), uid.as_slice(), |a, b| a == b)
 }
 
-#[cfg(not(unix))]
-fn owned_by(_meta: &std::fs::Metadata, _uid: Option<u32>) -> bool {
+/// Windows: the owner SID of `path` must be this process's user, or the
+/// default owner its token gives new files (an elevated administrator's
+/// files are owned by the Administrators group, not by the user).
+#[cfg(windows)]
+fn owned_by(path: &Path, _meta: &std::fs::Metadata, _uid: Option<u32>) -> bool {
+    win::owned_by_current_user(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn owned_by(_path: &Path, _meta: &std::fs::Metadata, _uid: Option<u32>) -> bool {
     false
+}
+
+/// The owner check's decision: `owner` must be one of `ours`. No owner, or no
+/// one to compare with, is "not ours".
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
+fn owner_is_ours<T>(owner: Option<T>, ours: &[T], same: impl Fn(&T, &T) -> bool) -> bool {
+    owner.is_some_and(|o| ours.iter().any(|u| same(&o, u)))
+}
+
+/// Owner SIDs through the Win32 security API. Any call that fails means the
+/// owner cannot be verified.
+#[cfg(windows)]
+mod win {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
+        TokenOwner, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    pub fn owned_by_current_user(path: &Path) -> bool {
+        let Some(file) = Owner::of(path) else {
+            return false;
+        };
+        let Some(token) = Token::open() else {
+            return false;
+        };
+        let user = token.info(TokenUser);
+        let default_owner = token.info(TokenOwner);
+        let mut ours: Vec<PSID> = Vec::new();
+        if let Some(buf) = &user {
+            // SAFETY: GetTokenInformation(TokenUser) filled `buf`, which is
+            // 8-aligned, with a TOKEN_USER whose Sid points into `buf`.
+            ours.push(unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid });
+        }
+        if let Some(buf) = &default_owner {
+            // SAFETY: as above, a TOKEN_OWNER whose Owner points into `buf`.
+            ours.push(unsafe { (*buf.as_ptr().cast::<TOKEN_OWNER>()).Owner });
+        }
+        ours.retain(|s| valid(*s));
+        let owner = Some(file.sid).filter(|s| valid(*s));
+        // SAFETY: both SIDs are valid (checked) and outlive the call: the
+        // file's lives in `file`'s descriptor, the token's in `user` and
+        // `default_owner`, all dropped after this.
+        super::owner_is_ours(owner, &ours, |a, b| unsafe { EqualSid(*a, *b) != 0 })
+    }
+
+    fn valid(sid: PSID) -> bool {
+        // SAFETY: IsValidSid only reads the SID, which is non-null here and
+        // points into a buffer the system filled.
+        !sid.is_null() && unsafe { IsValidSid(sid) != 0 }
+    }
+
+    /// A file's owner SID and the security descriptor holding it.
+    struct Owner {
+        sid: PSID,
+        descriptor: PSECURITY_DESCRIPTOR,
+    }
+
+    impl Owner {
+        fn of(path: &Path) -> Option<Owner> {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+            if wide[..wide.len() - 1].contains(&0) {
+                return None;
+            }
+            let mut sid: PSID = std::ptr::null_mut();
+            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            // SAFETY: `wide` is a NUL-terminated UTF-16 path; the out
+            // pointers are valid locals and the unwanted ones are null, as
+            // the API allows. On success `descriptor` is ours to LocalFree.
+            let err = unsafe {
+                GetNamedSecurityInfoW(
+                    wide.as_ptr(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION,
+                    &mut sid,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut descriptor,
+                )
+            };
+            if err != ERROR_SUCCESS || descriptor.is_null() {
+                return None;
+            }
+            // Built first so the descriptor is freed even with no owner (FAT).
+            let owner = Owner { sid, descriptor };
+            (!owner.sid.is_null()).then_some(owner)
+        }
+    }
+
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            // SAFETY: GetNamedSecurityInfoW allocated `descriptor` with
+            // LocalAlloc; it is freed once, here.
+            unsafe { LocalFree(self.descriptor) };
+        }
+    }
+
+    /// This process's access token, opened for queries.
+    struct Token(HANDLE);
+
+    impl Token {
+        fn open() -> Option<Token> {
+            let mut handle: HANDLE = std::ptr::null_mut();
+            // SAFETY: GetCurrentProcess returns a pseudo handle that needs no
+            // closing; `handle` is a valid out pointer.
+            let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) };
+            (ok != 0 && !handle.is_null()).then_some(Token(handle))
+        }
+
+        /// The token information of `class`, in an 8-aligned buffer.
+        fn info(&self, class: TOKEN_INFORMATION_CLASS) -> Option<Vec<u64>> {
+            let mut len = 0u32;
+            // SAFETY: a null buffer of length 0 asks only for the size,
+            // written to `len`.
+            unsafe { GetTokenInformation(self.0, class, std::ptr::null_mut(), 0, &mut len) };
+            if len == 0 {
+                return None;
+            }
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+            let cap = u32::try_from(buf.len() * 8).ok()?;
+            // SAFETY: `buf` is writable for `cap` >= `len` bytes and lives
+            // as long as the returned value.
+            let ok = unsafe {
+                GetTokenInformation(self.0, class, buf.as_mut_ptr().cast(), cap, &mut len)
+            };
+            (ok != 0).then_some(buf)
+        }
+    }
+
+    impl Drop for Token {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from OpenProcessToken and is closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 /// No component of `rel` below `out` is a link: checked just before a move.
@@ -566,6 +719,31 @@ mod tests {
         assert!(create_parents_checked(&out, Path::new("file/x.snxsym")).is_err());
         create_parents_checked(&out, Path::new("n/m/o.snxsym")).expect("plain folders");
         assert!(out.join("n/m").is_dir());
+        std::fs::remove_dir_all(&base).expect("cleanup");
+    }
+
+    #[test]
+    fn the_owner_check_fails_closed() {
+        let same = |a: &u32, b: &u32| a == b;
+        assert!(owner_is_ours(Some(7), &[3, 7], same));
+        assert!(!owner_is_ours(Some(7), &[3], same));
+        assert!(!owner_is_ours(None, &[7], same));
+        assert!(!owner_is_ours(Some(7), &[], same));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_this_process_made_is_ours_and_a_system_file_is_not() {
+        let base = tmp("sid");
+        std::fs::write(base.join("mine"), "x").expect("f");
+        assert!(win::owned_by_current_user(&base));
+        assert!(win::owned_by_current_user(&base.join("mine")));
+        assert!(!win::owned_by_current_user(&base.join("missing")));
+        // System32 belongs to TrustedInstaller, never to a test run.
+        let root = std::env::var_os("SystemRoot").expect("SystemRoot");
+        assert!(!win::owned_by_current_user(
+            &Path::new(&root).join("System32")
+        ));
         std::fs::remove_dir_all(&base).expect("cleanup");
     }
 

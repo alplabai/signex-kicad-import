@@ -9,7 +9,7 @@ on:
 # now; move it to Signex trunk after that batch merges. The fixtures belong to
 # the Signex repository and are only read, never copied into this one.
 env:
-  SIGNEX_REF: fcd38279f471820809128a85fa88ea8227b1af3d
+  SIGNEX_REF: 68c548bef58afe32c327208ef357c90b572cf3c3
 
 jobs:
   check:
